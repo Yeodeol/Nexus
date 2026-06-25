@@ -139,7 +139,7 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 - [x] **Fase 0** — Núcleo MCP (capacidades, ruteo, features coordinadas, checkpoints)
 - [ ] **Fase 1** — Poblado de capacidades de un proyecto piloto
 - [ ] **Fase 2** — Skill orquestador (el "cómo pensar" del cerebro)
-- [ ] **Fase 3** — Dashboard de monitoreo (grafo de interacciones + estado de ramas)
+- [x] **Fase 3** — Dashboard de monitoreo (grafo de interacciones + estado de ramas)
 - [ ] **Fase 4** — Sensores externos (p. ej. monitoreo de Slack → bandeja de requerimientos)
 - [ ] **Fase 5** — Actuadores asistidos (borradores de respuesta con aprobación humana)
 
@@ -147,7 +147,13 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 
 ## Estado
 
-Proyecto en construcción (**Fase 0 de 5**). El núcleo funciona; la API de los tools puede cambiar mientras avanza el roadmap.
+En construcción (**Fase 3 de 5**). El núcleo (Fase 0) funciona y el **dashboard de monitoreo** (Fase 3) ya está disponible:
+
+```powershell
+python dashboard\dashboard.py    # http://localhost:8788
+```
+
+Lee `hub.db` en solo lectura (sin dependencias externas) y muestra el grafo de dependencias e interacciones, el ruteo resuelto, las capacidades por proyecto y el estado de las features coordinadas — detalle en [dashboard/README.md](dashboard/README.md). La API de los tools puede cambiar mientras avanza el roadmap.
 
 ## Licencia
 
