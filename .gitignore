@@ -1,0 +1,16 @@
+# Entornos virtuales
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Bases de datos locales (NUNCA subir datos reales)
+*.db
+*.db.*.bak
+*.bak
+
+# Entorno y logs
+.env
+*.log
