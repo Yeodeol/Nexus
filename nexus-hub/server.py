@@ -174,14 +174,24 @@ def list_capabilities(project: str = "", kind: str = "", category: str = "") -> 
 @mcp.tool()
 def find_providers(query: str) -> str:
     """Busca que proyectos PROVEEN algo que coincide con 'query' (en name, category,
-    contract o notes). Sirve para rutear: '¿quien provee lambdas de pagos?'."""
-    like = f"%{query}%"
+    contract o notes). Sirve para rutear: '¿quien provee lambdas de pagos?'.
+    Tokeniza la consulta (separa por espacios, '_' y '-') y exige que CADA token
+    aparezca en algun campo, asi 'validar clave sii' encuentra 'validar_clave_sii'."""
+    tokens = [t for t in re.split(r"[\s_\-]+", query.lower().strip()) if t]
+    if not tokens:
+        return "La consulta esta vacia."
+    clauses, params = [], []
+    for t in tokens:
+        like = f"%{t}%"
+        clauses.append("(name LIKE ? OR category LIKE ? OR contract LIKE ? OR notes LIKE ?)")
+        params.extend([like, like, like, like])
+    where = " AND ".join(clauses)
     with db() as conn:
         rows = conn.execute(
-            """SELECT project, name, category, contract FROM capabilities
-               WHERE kind='provides' AND (name LIKE ? OR category LIKE ? OR contract LIKE ? OR notes LIKE ?)
+            f"""SELECT project, name, category, contract FROM capabilities
+               WHERE kind='provides' AND {where}
                ORDER BY project, name""",
-            (like, like, like, like)).fetchall()
+            params).fetchall()
     if not rows:
         return f"Ningun proyecto provee algo que coincida con '{query}'."
     return json.dumps([dict(r) for r in rows], indent=2, ensure_ascii=False)
