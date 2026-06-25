@@ -83,6 +83,6 @@ El límite de contexto del chat se respeta con tres defensas:
 | 0 | Núcleo MCP ✅ |
 | 1 | Poblado de capacidades de un proyecto piloto |
 | 2 | Skill orquestador (comportamiento del cerebro) |
-| 3 | Dashboard de monitoreo |
+| 3 | Dashboard de monitoreo ✅ |
 | 4 | Sensores externos (p. ej. Slack → bandeja de requerimientos) |
 | 5 | Actuadores asistidos (borradores con aprobación humana) |
