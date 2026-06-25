@@ -114,6 +114,8 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 | `update_branch_state` / `get_coordinated_feature` / `list_coordinated_features` | Seguimiento de features cross-repo |
 | `checkpoint` / `get_checkpoints` | Memoria externa para no saturar el contexto del chat |
 
+> 🧭 El skill **`/orquestar`** (en [skills/orquestar.md](skills/orquestar.md)) es el "cómo pensar" del cerebro. Cópialo a `~/.claude/commands/` (Claude Code) para orquestar trabajo que cruza repos.
+
 ### Ejemplo de uso (genérico)
 
 ```
@@ -137,8 +139,8 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 ## Roadmap
 
 - [x] **Fase 0** — Núcleo MCP (capacidades, ruteo, features coordinadas, checkpoints)
-- [ ] **Fase 1** — Poblado de capacidades de un proyecto piloto
-- [ ] **Fase 2** — Skill orquestador (el "cómo pensar" del cerebro)
+- [x] **Fase 1** — Poblado de capacidades de un proyecto piloto
+- [x] **Fase 2** — Skill orquestador (el "cómo pensar" del cerebro)
 - [x] **Fase 3** — Dashboard de monitoreo (grafo de interacciones + estado de ramas)
 - [ ] **Fase 4** — Sensores externos (p. ej. monitoreo de Slack → bandeja de requerimientos)
 - [ ] **Fase 5** — Actuadores asistidos (borradores de respuesta con aprobación humana)
