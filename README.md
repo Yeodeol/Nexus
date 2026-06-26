@@ -21,10 +21,28 @@ Cuando trabajas en varios proyectos en paralelo:
 
 - 🗺️ **Mapa de capacidades** — registra qué **provee** y qué **consume** cada proyecto (APIs, funciones, tablas, servicios).
 - 🧭 **Ruteo automático** — dado un objetivo en un proyecto, deduce qué otros proyectos están implicados y a quién consultar.
-- 🔗 **Handoffs** — transfiere contexto de un proyecto a otro (decisiones, contratos, pendientes).
-- 🌿 **Features coordinadas** — crea la **misma rama** (`feature/...`) en varios repos y rastrea su estado (`planned → created → pushed → pr-open → merged`).
-- 📊 **Monitoreo** — registra cada interacción entre proyectos para verlo en un panel.
+- 🔎 **Auto-servicio** — cualquier sesión **averigua sola** el contexto de otro proyecto (`get_project_context` trae su `CLAUDE.md` y capacidades), sin esperar un handoff.
+- 💬 **Comunicación entre sesiones** — un buzón asíncrono (`post_message`/`read_messages`) para que sesiones de distintos proyectos se dejen preguntas y respuestas.
+- 🔗 **Handoffs** — para **empujar** trabajo entregable de un proyecto a otro (decisiones, contratos, pendientes a accionar).
+- 🌿 **Features coordinadas** — crea la **misma rama** (`feature/...`) en varios repos y rastrea su estado (`planned → … → merged`).
+- 📊 **Visualización en vivo** — un widget del orquestador muestra el grafo de proyectos y **enciende** las interacciones en tiempo real.
 - 💾 **Memoria externa** — todo persiste en una base SQLite, así el contexto de tu chat se mantiene liviano.
+
+---
+
+## Qué es y qué no es
+
+**Nexus ES:**
+- Una **memoria/mapa compartido** de tus proyectos (qué hay, qué provee/consume cada uno, cómo se conectan), persistente entre sesiones.
+- Un modelo de **auto-servicio**: tu asistente averigua el contexto de otro sistema por sí mismo y rutea el trabajo.
+- Una **capa sobre tu cliente MCP** (Claude Code): le da herramientas y memoria; el "cerebro" que piensa, da permisos y lee repos sigue siendo Claude Code.
+- Una **visualización en vivo** (widget) de cómo interactúan los sistemas.
+
+**Nexus NO es:**
+- **No es un chat ni un IDE propio.** No reemplaza a Claude Code — se apoya en él. *(Hubo un experimento de chat agéntico propio; se archivó en `cockpit/experimental/` porque Claude Code cumple ese rol mejor: permisos, subagentes, lectura de repos.)*
+- **No exige handoffs para enterarse de algo.** Para *averiguar* se usa el auto-servicio; los handoffs son solo para *empujar* trabajo que el otro debe accionar.
+- **No es un servicio con costo propio.** Los módulos son Python + SQLite local; no llama por su cuenta a ninguna API de pago.
+- **No duplica tu código ni tu estado.** Solo guarda metadatos (mapa, interacciones, mensajes); la verdad sigue en cada repo y su `CLAUDE.md`.
 
 ---
 
@@ -32,13 +50,13 @@ Cuando trabajas en varios proyectos en paralelo:
 
 ```mermaid
 flowchart TD
-    U["Tú · un solo chat"] --> B["Cerebro<br/>cliente MCP + skill orquestador"]
+    U["Tú · Claude Code<br/>(el cerebro)"] --> B["Cliente MCP<br/>+ skill orquestador"]
     B -->|consulta / registra| N["nexus-hub<br/>capacidades · interacciones · features"]
     B -->|lanza| S["Subagentes<br/>leen cada repo"]
     N --> DB[("hub.db<br/>memoria compartida")]
     P["projects-hub<br/>proyectos · estado · handoffs"] --> DB
     S --> R["Repos: app · api · servicios..."]
-    DB --> D["Dashboard de monitoreo"]
+    DB --> D["Widget del orquestador<br/>+ dashboard"]
 ```
 
 Nexus son **dos módulos MCP** que comparten una sola base de datos (`~/.claude-projects-hub/hub.db`):
@@ -151,13 +169,15 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 
 ## Estado
 
-En construcción (**Fase 3 de 5**). El núcleo (Fase 0) funciona y el **dashboard de monitoreo** (Fase 3) ya está disponible:
+En uso activo. El núcleo (Fases 0–3) funciona, el mapa está poblado con proyectos reales, y el modelo es **auto-servicio**: el cerebro es **Claude Code** y Nexus le da el mapa, la memoria y las herramientas para averiguar y coordinar.
 
+**Visualización en vivo** — el widget del orquestador (sin dependencias ni costo):
 ```powershell
-python dashboard\dashboard.py    # http://localhost:8788
+python cockpit\widget_server.py     # http://localhost:8780
 ```
+Muestra el grafo de proyectos y enciende las interacciones en tiempo real mientras trabajas en Claude Code. También está el dashboard de solo lectura (`python dashboard\dashboard.py` → `:8788`).
 
-Lee `hub.db` en solo lectura (sin dependencias externas) y muestra el grafo de dependencias e interacciones, el ruteo resuelto, las capacidades por proyecto y el estado de las features coordinadas — detalle en [dashboard/README.md](dashboard/README.md). La API de los tools puede cambiar mientras avanza el roadmap.
+La API de los tools puede cambiar mientras avanza el roadmap.
 
 ## Licencia
 

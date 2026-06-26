@@ -1,6 +1,8 @@
 # Plan — Chat unificado de Nexus ("cockpit")
 
-> **Visión #3 / Fase 6 del roadmap.** Documento de diseño. La implementación es por fases; este documento la guía. No hay fechas: el orden de fases minimiza el riesgo.
+> ⚠️ **REORIENTADO.** Tras probar el MVP se decidió **no** construir un chat propio: el cerebro es **Claude Code** (maneja permisos, subagentes y lectura de repos mejor) y lo que Nexus aporta es el **widget del orquestador en vivo** (`cockpit/widget_server.py`) + el modelo **auto-servicio** (`get_project_context`, buzón). El chat agéntico que describe este plan se archivó en `cockpit/experimental/`. Este documento queda como **registro de diseño**; para el estado actual ver el [README](../README.md).
+
+> **Visión #3 / Fase 6 del roadmap (original).** Documento de diseño. La implementación era por fases; este documento la guiaba.
 
 ## Objetivo
 

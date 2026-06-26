@@ -59,6 +59,14 @@ Nexus parte de una metáfora simple:
 
 El ruteo no es magia: es **razonamiento sobre un mapa bien mantenido**. Mientras más capacidades declaradas, menos hace falta dirigir al cerebro a mano.
 
+## Auto-servicio y comunicación entre sesiones
+
+Los módulos MCP de Nexus están en la config **global** del cliente, así que **toda sesión, en cualquier proyecto, los tiene**. El modelo es de auto-servicio:
+
+- **Averiguar sin handoff:** cuando una sesión necesita algo de otro sistema, usa `resolve_dependencies` / `find_providers` para ubicarlo y `get_project_context(otro)` para traer su descripción, capacidades y su `CLAUDE.md`. Así entiende el otro proyecto por sí misma.
+- **Buzón entre sesiones:** `post_message` / `read_messages` deja mensajes asíncronos (preguntas, avisos, respuestas). Las sesiones son procesos independientes; el buzón persiste en `hub.db` y se lee al arrancar o al consultar.
+- **Handoffs** se reservan para *empujar* trabajo entregable que el otro debe accionar.
+
 ## Manejo del contexto
 
 El límite de contexto del chat se respeta con tres defensas:
@@ -73,6 +81,8 @@ El límite de contexto del chat se respeta con tres defensas:
 
 ## Decisiones de diseño
 
+- **El cerebro es tu cliente MCP (Claude Code), no un chat propio.** Nexus no reconstruye la conversación ni el manejo de permisos/repos: se apoya en Claude Code y le aporta mapa, memoria y herramientas. (Hubo un experimento de chat propio con el Agent SDK; se archivó en `cockpit/experimental/`.)
+- **Averiguar antes que pedir.** Para conocer el contexto de otro proyecto se usa el auto-servicio (`get_project_context`, `resolve_dependencies`); los handoffs quedan para *empujar* trabajo accionable.
 - **Una sola base de datos** en vez de dos almacenes que sincronizar.
 - **Borrado seguro**: `delete_project` no elimina un proyecto con datos asociados a menos que se pida explícitamente (`purge_data=True`), para no dejar huérfanos.
 - **Extensión, no reemplazo**: `nexus-hub` se apoya en `projects-hub` y lo respeta.
