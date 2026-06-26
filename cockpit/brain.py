@@ -30,8 +30,10 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
+
+import graph
 
 # Import perezoso del SDK: /health debe responder aunque el paquete no este
 # instalado todavia (asi se diagnostica el entorno antes de gastar tokens).
@@ -90,8 +92,20 @@ UI_PATH = Path(__file__).parent / "ui.html"
 
 @app.get("/")
 def index():
-    """Sirve la UI de chat (Fase B)."""
+    """Sirve la UI del cockpit (chat + grafo)."""
     return FileResponse(UI_PATH)
+
+
+@app.get("/graph", response_class=HTMLResponse)
+def graph_page():
+    """Grafo vivo embebido (Fase C)."""
+    return graph.render_graph_page()
+
+
+@app.get("/api/interactions")
+def api_interactions(since: int = 0):
+    """Interacciones nuevas para la animacion del grafo (polling)."""
+    return graph.interactions_since(since)
 
 
 class ChatIn(BaseModel):
