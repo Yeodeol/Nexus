@@ -25,7 +25,7 @@ PREGUNTA = "que consume el proyecto checkempresa y quien lo provee? responde bre
 
 async def main():
     prompt = brain.ROL + "\n\nPeticion del usuario: " + PREGUNTA
-    print(">>> consultando al agente (modelo:", os.environ.get("NEXUS_MODEL", "sonnet"), ")\n")
+    print(">>> consultando al agente (modelo:", os.environ.get("NEXUS_MODEL", "opus"), ")\n")
     async for msg in query(prompt=prompt, options=brain._options()):
         if isinstance(msg, AssistantMessage):
             for block in getattr(msg, "content", None) or []:

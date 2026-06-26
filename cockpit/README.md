@@ -22,7 +22,7 @@ cockpit\.venv\Scripts\python.exe -m pip install -r cockpit\requirements.txt
 |---|---|---|
 | `ANTHROPIC_API_KEY` | autenticación del agente | (requerida) |
 | `NEXUS_MCP_DIR` | carpeta con `projects-hub/` y `nexus-hub/` | `~/mcp-servers` |
-| `NEXUS_MODEL` | modelo del agente (`sonnet` / `opus`) | `sonnet` |
+| `NEXUS_MODEL` | modelo del agente (`opus` / `sonnet`) | `opus` |
 
 ## Correr
 ```powershell

@@ -82,7 +82,7 @@ def _options():
     return ClaudeAgentOptions(
         mcp_servers=_mcp_servers(),
         allowed_tools=["mcp__projects-hub__*", "mcp__nexus-hub__*"],
-        model=os.environ.get("NEXUS_MODEL", "sonnet"),
+        model=os.environ.get("NEXUS_MODEL", "opus"),
     )
 
 
@@ -124,7 +124,7 @@ def health():
         "sdk_installed": _SDK_OK,
         "sdk_error": _SDK_ERR,
         "api_key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
-        "model": os.environ.get("NEXUS_MODEL", "sonnet"),
+        "model": os.environ.get("NEXUS_MODEL", "opus"),
         "mcp_dir": str(os.environ.get("NEXUS_MCP_DIR", Path.home() / "mcp-servers")),
     }
 
