@@ -30,7 +30,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 # Import perezoso del SDK: /health debe responder aunque el paquete no este
@@ -85,6 +85,13 @@ def _options():
 
 
 app = FastAPI(title="Nexus Cockpit", version="0.1.0")
+UI_PATH = Path(__file__).parent / "ui.html"
+
+
+@app.get("/")
+def index():
+    """Sirve la UI de chat (Fase B)."""
+    return FileResponse(UI_PATH)
 
 
 class ChatIn(BaseModel):
