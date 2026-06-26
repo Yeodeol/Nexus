@@ -75,6 +75,15 @@ def db():
         summary TEXT NOT NULL,
         created_at TEXT
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_project TEXT,
+        to_project TEXT NOT NULL,
+        text TEXT NOT NULL,
+        status TEXT DEFAULT 'unread',
+        created_at TEXT,
+        read_at TEXT
+    )""")
     return conn
 
 
@@ -124,6 +133,46 @@ def delete_project(name: str, purge_data: bool = False) -> str:
         conn.execute("DELETE FROM projects WHERE name=?", (name,))
     suffix = " y todos sus datos" if purge_data else ""
     return f"Proyecto '{name}'{suffix} eliminado del hub."
+
+
+@mcp.tool()
+def get_project_context(project: str, max_chars: int = 8000) -> str:
+    """Averigua el contexto de OTRO proyecto SIN pedir handoff: devuelve su descripcion,
+    ruta, lo que PROVEE/CONSUME y el contenido de su CLAUDE.md (si existe en la raiz). Asi
+    una sesion entiende por si misma que hace y que necesita otro sistema y se auto-sirve."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT name, path, description FROM projects WHERE name=?", (project,)).fetchone()
+        if not row:
+            return f"Proyecto '{project}' no existe en el hub."
+        caps = conn.execute(
+            "SELECT kind, name, category, contract, notes FROM capabilities WHERE project=? "
+            "ORDER BY kind, name", (project,)).fetchall()
+    info = {
+        "project": row["name"],
+        "path": row["path"],
+        "description": row["description"],
+        "provides": [dict(c) for c in caps if c["kind"] == "provides"],
+        "consumes": [dict(c) for c in caps if c["kind"] == "consumes"],
+        "claude_md": None,
+    }
+    base = Path(row["path"]) if row["path"] else None
+    if base:
+        for fname in ("CLAUDE.md", "claude.md", "Claude.md"):
+            f = base / fname
+            try:
+                if f.exists():
+                    txt = f.read_text(encoding="utf-8", errors="replace")
+                    if len(txt) > max_chars:
+                        txt = txt[:max_chars] + "\n...[truncado; abre el archivo para el resto]..."
+                    info["claude_md"] = txt
+                    info["claude_md_file"] = str(f)
+                    break
+            except OSError:
+                pass
+    if info["claude_md"] is None:
+        info["nota"] = "Sin CLAUDE.md en la raiz; usa 'path', las capacidades y get_checkpoints."
+    return json.dumps(info, indent=2, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------
@@ -407,6 +456,50 @@ def get_checkpoints(project: str, limit: int = 5) -> str:
     if not rows:
         return f"No hay checkpoints para '{project}'."
     return json.dumps([dict(r) for r in rows], indent=2, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------
+# Buzon inter-sesion (mensajes asincronos ligeros entre proyectos)
+# --------------------------------------------------------------------------
+@mcp.tool()
+def post_message(to_project: str, text: str, from_project: str = "") -> str:
+    """Deja un mensaje asincrono en el buzon de OTRO proyecto. Mas ligero que un handoff
+    (solo texto, sin stage/payload): para preguntas, avisos o respuestas entre sesiones de
+    distintos proyectos. La otra sesion lo lee con read_messages al arrancar o al consultar."""
+    with db() as conn:
+        if not _project_exists(conn, to_project):
+            return f"Proyecto destino '{to_project}' no existe en el hub."
+        conn.execute(
+            "INSERT INTO messages(from_project, to_project, text, status, created_at) "
+            "VALUES (?,?,?, 'unread', ?)",
+            (from_project, to_project, text, now()))
+    via = f" (de {from_project})" if from_project else ""
+    return f"Mensaje dejado para '{to_project}'{via}."
+
+
+@mcp.tool()
+def read_messages(project: str, include_read: bool = False, mark_read: bool = True) -> str:
+    """Lee el buzon de un proyecto (mensajes de otras sesiones). Por defecto solo los NO
+    leidos y los marca como leidos. include_read=True trae tambien el historial reciente."""
+    with db() as conn:
+        if include_read:
+            rows = conn.execute(
+                """SELECT id, from_project, text, status, created_at, read_at FROM messages
+                   WHERE to_project=? ORDER BY created_at DESC LIMIT 50""", (project,)).fetchall()
+            out = [dict(r) for r in rows]
+        else:
+            rows = conn.execute(
+                """SELECT id, from_project, text, created_at FROM messages
+                   WHERE to_project=? AND status='unread' ORDER BY created_at""", (project,)).fetchall()
+            out = [dict(r) for r in rows]
+            if mark_read and out:
+                conn.executemany(
+                    "UPDATE messages SET status='read', read_at=? WHERE id=?",
+                    [(now(), r["id"]) for r in out])
+    if not out:
+        scope = "" if include_read else "nuevos "
+        return f"No hay mensajes {scope}para '{project}'."
+    return json.dumps(out, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
