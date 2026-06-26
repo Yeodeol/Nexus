@@ -114,9 +114,6 @@ async def chat(inp: ChatIn):
         if not _SDK_OK:
             yield _sse({"type": "error", "text": f"claude-agent-sdk no instalado: {_SDK_ERR}"})
             return
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            yield _sse({"type": "error", "text": "Falta ANTHROPIC_API_KEY en el entorno."})
-            return
         prompt = f"{ROL}\n\nPeticion del usuario: {inp.message}"
         try:
             async for msg in query(prompt=prompt, options=_options()):
