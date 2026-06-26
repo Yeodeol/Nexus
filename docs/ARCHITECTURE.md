@@ -47,6 +47,7 @@ Nexus parte de una metáfora simple:
 | `coordinated_features` | `id`, `slug`, `branch`, `type`, `description`, `status`, timestamps | Features que cruzan repos |
 | `feature_branches` | `id`, `feature_id`, `project`, `branch`, `state`, `pr_url`, `updated_at` | Estado de la rama por repo |
 | `checkpoints` | `id`, `project`, `summary`, `created_at` | Resúmenes de avance (memoria externa) |
+| `messages` | `id`, `from_project`, `to_project`, `text`, `status`, `created_at`, `read_at` | Buzón asíncrono entre proyectos/sesiones |
 
 ## Flujo de orquestación
 
