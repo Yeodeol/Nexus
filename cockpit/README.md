@@ -1,47 +1,43 @@
-# Nexus Cockpit (Fase A — cerebro headless)
+# Widget del orquestador (Nexus)
 
-Backend "cerebro" del **chat unificado** (visión #3). Expone un chat agéntico
-sobre las tools del hub (`projects-hub` + `nexus-hub`) usando el **Claude Agent SDK**.
+Una ventana que muestra el **grafo de orquestación en vivo**: los nodos (proyectos)
+y sus conexiones se **encienden** cuando ocurre una interacción entre sistemas.
 
-> Estado: **Fase A** — esqueleto del backend. La UI y el grafo vivo embebido
-> llegan en las fases B/C. Ver el diseño en [../docs/PLAN_CHAT_UNIFICADO.md](../docs/PLAN_CHAT_UNIFICADO.md).
+El **cerebro es Claude Code** — ahí haces las peticiones, das los permisos y
+consultas los repos (con el skill `/orquestar` y las tools del hub). Cada vez que
+se registra una interacción (`log_interaction`), este widget la muestra
+encendiéndose en vivo. Sin chat propio, sin Agent SDK, **sin costo de API**.
 
-## Requisitos
-- Python 3.10+
-- `ANTHROPIC_API_KEY` en el entorno (con saldo — **costo por uso**)
-- Los MCP del hub instalados con su `.venv` (projects-hub, nexus-hub)
-
-## Instalación
-```powershell
-python -m venv cockpit\.venv
-cockpit\.venv\Scripts\python.exe -m pip install -r cockpit\requirements.txt
+```
+  Claude Code (el cerebro)              Widget (esta ventana)
+  ──────────────────────────           ──────────────────────────────
+  peticiones · permisos · repos  ──▶    grafo vivo: las burbujas se
+  /orquestar (log_interaction)          encienden al registrar interacciones
 ```
 
-## Configuración (variables de entorno)
-| Variable | Para qué | Default |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | autenticación del agente | (requerida) |
-| `NEXUS_MCP_DIR` | carpeta con `projects-hub/` y `nexus-hub/` | `~/mcp-servers` |
-| `NEXUS_MODEL` | modelo del agente (`opus` / `sonnet`) | `opus` |
-
-## Correr
+## Uso
 ```powershell
-$env:ANTHROPIC_API_KEY="sk-ant-..."; cockpit\.venv\Scripts\python.exe -m uvicorn brain:app --app-dir cockpit --port 8800
+python cockpit\widget_server.py
 ```
+Abre http://localhost:8780 y déjalo en una ventana aparte mientras trabajas en
+Claude Code. Solo requiere **Python 3.10+** (biblioteca estándar; no instala nada).
+Para otro puerto: `python cockpit\widget_server.py 9000`.
 
-## Probar
-Diagnóstico sin gastar tokens (verifica SDK + API key + rutas):
-```powershell
-curl http://localhost:8800/health
-```
-Chat agéntico (streaming SSE):
-```powershell
-curl -N -X POST http://localhost:8800/chat -H "Content-Type: application/json" -d '{\"message\": \"que consume checkempresa y quien lo provee?\"}'
-```
-Esperado: el agente llama a `resolve_dependencies` y responde que `respaldos-scraps`
-provee esas capacidades.
+## Archivos
+| Archivo | Qué es |
+|---|---|
+| `widget_server.py` | Server mínimo (stdlib) que sirve el widget en `:8780` |
+| `graph.py` | Arma el grafo desde `hub.db` (solo lectura) + la animación en vivo (`/api/interactions`) |
+| `experimental/` | Experimento previo de **chat agéntico propio** (FastAPI + Claude Agent SDK). Archivado: Claude Code cumple ese rol mejor (permisos, subagentes, repos). Ver abajo. |
 
-## Notas
-- `/health` responde aunque el SDK no esté instalado (para diagnosticar el entorno).
-- La estructura de los mensajes del SDK se lee de forma defensiva; al integrarlo en
-  vivo se ajusta contra el paquete real instalado.
+## Cómo se llena
+Trabaja normalmente en Claude Code. Cuando orquestes (resolver dependencias,
+consultar proveedores) y se registren interacciones en el hub, el widget las
+muestra encendiéndose en ≤2.5 s (hace polling a `/api/interactions`).
+
+## experimental/ (chat propio, archivado)
+Un MVP de chat agéntico que reconstruía la conversación con el Agent SDK. Se
+archivó porque **Claude Code ya es mejor cerebro** (manejo de permisos, lectura de
+repos con subagentes, contexto). Si quieres retomarlo: instala
+`experimental/requirements.txt` en un venv y corre
+`uvicorn brain:app --app-dir cockpit/experimental`. Usa el mismo `graph.py` del padre.

@@ -33,6 +33,8 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import graph
 
 # Import perezoso del SDK: /health debe responder aunque el paquete no este
