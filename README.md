@@ -113,6 +113,8 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 | `create_coordinated_feature` | Crea la misma rama en varios repos + entrega el comando git |
 | `update_branch_state` / `get_coordinated_feature` / `list_coordinated_features` | Seguimiento de features cross-repo |
 | `checkpoint` / `get_checkpoints` | Memoria externa para no saturar el contexto del chat |
+| `get_project_context` | Trae el contexto de otro proyecto (descripción, capacidades y su `CLAUDE.md`) para **averiguar sin handoff** |
+| `post_message` / `read_messages` | Buzón asíncrono ligero entre sesiones/proyectos |
 
 > 🧭 El skill **`/orquestar`** (en [skills/orquestar.md](skills/orquestar.md)) es el "cómo pensar" del cerebro. Cópialo a `~/.claude/commands/` (Claude Code) para orquestar trabajo que cruza repos.
 
