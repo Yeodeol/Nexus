@@ -24,6 +24,7 @@ Cuando trabajas en varios proyectos en paralelo:
 - 🔎 **Auto-servicio** — cualquier sesión **averigua sola** el contexto de otro proyecto (`get_project_context` trae su `CLAUDE.md` y capacidades), sin esperar un handoff.
 - 💬 **Comunicación entre sesiones** — un buzón asíncrono (`post_message`/`read_messages`) para que sesiones de distintos proyectos se dejen preguntas y respuestas.
 - 🔗 **Handoffs** — para **empujar** trabajo entregable de un proyecto a otro (decisiones, contratos, pendientes a accionar).
+- 🤖 **Auto-resolución (listener)** — un daemon despierta al sistema destino con un Claude Code headless: **responde solo** las consultas simples y, para requerimientos, deja un **borrador de alcance** para tu aprobación (sin tocar código ni git). Ver [`listener/`](listener/README.md).
 - 🌿 **Features coordinadas** — crea la **misma rama** (`feature/...`) en varios repos y rastrea su estado (`planned → … → merged`).
 - 📊 **Visualización en vivo** — un widget del orquestador muestra el grafo de proyectos y **enciende** las interacciones en tiempo real.
 - 💾 **Memoria externa** — todo persiste en una base SQLite, así el contexto de tu chat se mantiene liviano.
@@ -132,7 +133,9 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 | `update_branch_state` / `get_coordinated_feature` / `list_coordinated_features` | Seguimiento de features cross-repo |
 | `checkpoint` / `get_checkpoints` | Memoria externa para no saturar el contexto del chat |
 | `get_project_context` | Trae el contexto de otro proyecto (descripción, capacidades y su `CLAUDE.md`) para **averiguar sin handoff** |
-| `post_message` / `read_messages` | Buzón asíncrono ligero entre sesiones/proyectos |
+| `post_message` / `read_messages` | Buzón asíncrono ligero entre sesiones/proyectos (con `kind`: `note`/`question`/`answer`) |
+| `ask_provider` | Pregunta a otro sistema y deja la consulta para que el **listener la auto-responda** (deduce el proveedor si no lo indicás) |
+| `list_auto_runs` | Bitácora de lo que el listener auto-resolvió (estado y resultado) |
 
 > 🧭 El skill **`/orquestar`** (en [skills/orquestar.md](skills/orquestar.md)) es el "cómo pensar" del cerebro. Cópialo a `~/.claude/commands/` (Claude Code) para orquestar trabajo que cruza repos.
 
@@ -156,14 +159,39 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 
 ---
 
+## Auto-resolución (listener)
+
+Antes, cuando el Sistema A necesitaba algo de B, A *empujaba* un handoff… y quedaba ahí
+esperando a que alguien abriera la sesión de B. El **listener** cierra ese lazo: un daemon
+(`listener/nexus_listener.py`) sondea `hub.db` y, cuando aparece trabajo para un proyecto
+**opt-in**, despierta a ese proyecto con un **Claude Code headless** (`claude -p`, tu
+suscripción, sin API key):
+
+- **Consulta simple** (`ask_provider` o un mensaje `kind='question'`) → el agente investiga
+  **read-only** y **responde solo** al buzón del que preguntó.
+- **Requerimiento** (`send_handoff`) → el agente **no toca código ni git**: deja un **borrador
+  de alcance** (`checkpoint`) y avisa; el handoff queda **pendiente** para tu aprobación.
+
+Seguridad: allowlist de tools de solo lectura (sin `Write`/`Edit`/`Bash`), permisos que
+**deniegan** lo no listado, timeout, opt-in por proyecto e idempotencia (`auto_runs`). Todo
+queda logueado y visible con `list_auto_runs` y en el dashboard. Guía completa en
+[`listener/README.md`](listener/README.md).
+
+```powershell
+python listener/nexus_listener.py --once --dry-run --backlog   # ver qué tomaría
+python listener/nexus_listener.py                              # daemon (auto-resuelve lo nuevo)
+```
+
+---
+
 ## Roadmap
 
 - [x] **Fase 0** — Núcleo MCP (capacidades, ruteo, features coordinadas, checkpoints)
 - [x] **Fase 1** — Poblado de capacidades de un proyecto piloto
 - [x] **Fase 2** — Skill orquestador (el "cómo pensar" del cerebro)
 - [x] **Fase 3** — Dashboard de monitoreo (grafo de interacciones + estado de ramas)
+- [x] **Fase 5** — Actuadores asistidos: **listener autónomo** que auto-responde consultas y deja borradores de alcance para los requerimientos (aprobación humana). Ver [`listener/`](listener/README.md).
 - [ ] **Fase 4** — Sensores externos (p. ej. monitoreo de Slack → bandeja de requerimientos)
-- [ ] **Fase 5** — Actuadores asistidos (borradores de respuesta con aprobación humana)
 
 ---
 

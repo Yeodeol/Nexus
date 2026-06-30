@@ -1,0 +1,9 @@
+{
+  "_comment": "Copia este archivo a config.json y lista en 'responders' los proyectos que PUEDEN auto-responder (opt-in). Vacio = nadie auto-responde. config.json esta gitignored (no se versiona) para no filtrar nombres de proyectos reales.",
+  "responders": [],
+  "poll_interval": 15,
+  "timeout": 240,
+  "max_concurrent": 2,
+  "model": "sonnet",
+  "result_max_chars": 2000
+}

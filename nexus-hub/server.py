@@ -81,9 +81,28 @@ def db():
         to_project TEXT NOT NULL,
         text TEXT NOT NULL,
         status TEXT DEFAULT 'unread',
+        kind TEXT DEFAULT 'note',
         created_at TEXT,
         read_at TEXT
     )""")
+    # Bitacora del listener autonomo: una corrida por item para idempotencia.
+    # Vive en nexus-hub; NO toca las tablas de projects-hub.
+    conn.execute("""CREATE TABLE IF NOT EXISTS auto_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_type TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        project TEXT NOT NULL,
+        status TEXT DEFAULT 'claimed',
+        result TEXT,
+        created_at TEXT,
+        finished_at TEXT,
+        UNIQUE(item_type, item_id)
+    )""")
+    # ALTER defensivo: agrega 'kind' a messages de DBs viejas (CREATE no lo hace).
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT DEFAULT 'note'")
+    except sqlite3.OperationalError:
+        pass  # la columna ya existe
     return conn
 
 
@@ -93,6 +112,22 @@ def now():
 
 def _project_exists(conn, name):
     return conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone() is not None
+
+
+def _providers_for(conn, project):
+    """Conjunto de proyectos que PROVEEN algo que 'project' CONSUME (match por name o
+    category, misma logica que resolve_dependencies). Sirve para deducir a quien preguntar."""
+    consumes = conn.execute(
+        "SELECT name, category FROM capabilities WHERE project=? AND kind='consumes'",
+        (project,)).fetchall()
+    provs = set()
+    for c in consumes:
+        rows = conn.execute(
+            "SELECT project FROM capabilities WHERE kind='provides' AND project<>? "
+            "AND (name=? OR (category<>'' AND category=?))",
+            (project, c["name"], c["category"])).fetchall()
+        provs.update(r["project"] for r in rows)
+    return provs
 
 
 def _slugify(text):
@@ -462,19 +497,24 @@ def get_checkpoints(project: str, limit: int = 5) -> str:
 # Buzon inter-sesion (mensajes asincronos ligeros entre proyectos)
 # --------------------------------------------------------------------------
 @mcp.tool()
-def post_message(to_project: str, text: str, from_project: str = "") -> str:
+def post_message(to_project: str, text: str, from_project: str = "", kind: str = "note") -> str:
     """Deja un mensaje asincrono en el buzon de OTRO proyecto. Mas ligero que un handoff
     (solo texto, sin stage/payload): para preguntas, avisos o respuestas entre sesiones de
-    distintos proyectos. La otra sesion lo lee con read_messages al arrancar o al consultar."""
+    distintos proyectos. La otra sesion lo lee con read_messages al arrancar o al consultar.
+    kind: 'note' (aviso, def.), 'question' (consulta que el listener auto-respondera) o
+    'answer' (respuesta a una consulta previa)."""
+    kind = (kind or "note").lower().strip()
+    if kind not in ("note", "question", "answer"):
+        kind = "note"
     with db() as conn:
         if not _project_exists(conn, to_project):
             return f"Proyecto destino '{to_project}' no existe en el hub."
         conn.execute(
-            "INSERT INTO messages(from_project, to_project, text, status, created_at) "
-            "VALUES (?,?,?, 'unread', ?)",
-            (from_project, to_project, text, now()))
+            "INSERT INTO messages(from_project, to_project, text, status, kind, created_at) "
+            "VALUES (?,?,?, 'unread', ?, ?)",
+            (from_project, to_project, text, kind, now()))
     via = f" (de {from_project})" if from_project else ""
-    return f"Mensaje dejado para '{to_project}'{via}."
+    return f"Mensaje ({kind}) dejado para '{to_project}'{via}."
 
 
 @mcp.tool()
@@ -484,12 +524,12 @@ def read_messages(project: str, include_read: bool = False, mark_read: bool = Tr
     with db() as conn:
         if include_read:
             rows = conn.execute(
-                """SELECT id, from_project, text, status, created_at, read_at FROM messages
+                """SELECT id, from_project, text, kind, status, created_at, read_at FROM messages
                    WHERE to_project=? ORDER BY created_at DESC LIMIT 50""", (project,)).fetchall()
             out = [dict(r) for r in rows]
         else:
             rows = conn.execute(
-                """SELECT id, from_project, text, created_at FROM messages
+                """SELECT id, from_project, text, kind, created_at FROM messages
                    WHERE to_project=? AND status='unread' ORDER BY created_at""", (project,)).fetchall()
             out = [dict(r) for r in rows]
             if mark_read and out:
@@ -500,6 +540,73 @@ def read_messages(project: str, include_read: bool = False, mark_read: bool = Tr
         scope = "" if include_read else "nuevos "
         return f"No hay mensajes {scope}para '{project}'."
     return json.dumps(out, indent=2, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------
+# Consultas con auto-respuesta (gatillan al listener autonomo)
+# --------------------------------------------------------------------------
+@mcp.tool()
+def ask_provider(from_project: str, question: str, to_project: str = "") -> str:
+    """Pregunta algo a OTRO sistema y deja la consulta lista para que el listener la
+    AUTO-RESPONDA (sin abrir su sesion a mano). Si 'to_project' viene vacio, deduce el
+    proveedor desde el mapa (lo que 'from_project' consume y quien lo provee); si hay varios
+    candidatos los devuelve para que elijas. La respuesta llegara al buzon de 'from_project'
+    (read_messages) cuando el listener despierte al proveedor. Para empujar trabajo accionable
+    (un requerimiento), usa send_handoff; para una duda, usa esto."""
+    question = (question or "").strip()
+    if not question:
+        return "La pregunta esta vacia."
+    with db() as conn:
+        if not _project_exists(conn, from_project):
+            return f"Proyecto origen '{from_project}' no existe en el hub."
+        target = (to_project or "").strip()
+        if target:
+            if not _project_exists(conn, target):
+                return f"Proyecto destino '{target}' no existe en el hub."
+        else:
+            cands = _providers_for(conn, from_project)
+            cands.discard(from_project)
+            if len(cands) == 1:
+                target = cands.pop()
+            elif len(cands) > 1:
+                return json.dumps({
+                    "status": "ambiguo",
+                    "candidatos": sorted(cands),
+                    "hint": "Repite ask_provider con to_project=<uno de los candidatos>.",
+                }, indent=2, ensure_ascii=False)
+            else:
+                return ("No pude deducir el proveedor desde el mapa (¿'" + from_project +
+                        "' no declara lo que consume?). Indica to_project explicito, o declara "
+                        "la dependencia con declare_capability para que el ruteo sea automatico.")
+        conn.execute(
+            "INSERT INTO messages(from_project, to_project, text, status, kind, created_at) "
+            "VALUES (?,?,?, 'unread', 'question', ?)",
+            (from_project, target, question, now()))
+    return json.dumps({
+        "status": "encolada",
+        "from": from_project,
+        "to": target,
+        "nota": (f"Consulta encolada para '{target}'. El listener la auto-respondera; la "
+                 f"respuesta llegara al buzon de '{from_project}' (read_messages)."),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def list_auto_runs(project: str = "", limit: int = 50) -> str:
+    """Lista las corridas del listener autonomo (tabla auto_runs): que item se auto-resolvio,
+    para que proyecto, con que estado (claimed|answered|drafted|skipped|error) y el resultado.
+    Si se pasa project, filtra por el proyecto que resolvio. Sirve de observabilidad."""
+    with db() as conn:
+        if project:
+            rows = conn.execute(
+                "SELECT * FROM auto_runs WHERE project=? ORDER BY created_at DESC LIMIT ?",
+                (project, limit)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM auto_runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    if not rows:
+        return "No hay corridas del listener registradas."
+    return json.dumps([dict(r) for r in rows], indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":

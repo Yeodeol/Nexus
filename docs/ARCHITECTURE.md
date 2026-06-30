@@ -47,7 +47,8 @@ Nexus parte de una metáfora simple:
 | `coordinated_features` | `id`, `slug`, `branch`, `type`, `description`, `status`, timestamps | Features que cruzan repos |
 | `feature_branches` | `id`, `feature_id`, `project`, `branch`, `state`, `pr_url`, `updated_at` | Estado de la rama por repo |
 | `checkpoints` | `id`, `project`, `summary`, `created_at` | Resúmenes de avance (memoria externa) |
-| `messages` | `id`, `from_project`, `to_project`, `text`, `status`, `created_at`, `read_at` | Buzón asíncrono entre proyectos/sesiones |
+| `messages` | `id`, `from_project`, `to_project`, `text`, `status`, `kind`, `created_at`, `read_at` | Buzón asíncrono entre proyectos/sesiones (`kind`: `note`/`question`/`answer`) |
+| `auto_runs` | `id`, `item_type`, `item_id`, `project`, `status`, `result`, `created_at`, `finished_at` | Bitácora del listener autónomo (idempotencia: una corrida por item) |
 
 ## Flujo de orquestación
 
@@ -66,6 +67,41 @@ Los módulos MCP de Nexus están en la config **global** del cliente, así que *
 - **Averiguar sin handoff:** cuando una sesión necesita algo de otro sistema, usa `resolve_dependencies` / `find_providers` para ubicarlo y `get_project_context(otro)` para traer su descripción, capacidades y su `CLAUDE.md`. Así entiende el otro proyecto por sí misma.
 - **Buzón entre sesiones:** `post_message` / `read_messages` deja mensajes asíncronos (preguntas, avisos, respuestas). Las sesiones son procesos independientes; el buzón persiste en `hub.db` y se lee al arrancar o al consultar.
 - **Handoffs** se reservan para *empujar* trabajo entregable que el otro debe accionar.
+
+## Auto-resolución: el listener autónomo
+
+El auto-servicio resuelve el *averiguar*; el **listener** resuelve el *despertar*. Sin él, un
+handoff o una consulta a otro sistema quedan esperando a que alguien abra esa sesión a mano.
+
+```
+Sesión A  --send_handoff / ask_provider-->  hub.db
+                                              │
+                    nexus_listener.py (daemon, sondea ~15s)
+                                              │  item NUEVO para B (opt-in), no procesado
+                                              ▼
+              claude -p   (cwd = ruta de B, tools read-only + Nexus)
+                · CONSULTA  -> investiga read-only -> post_message(answer) + consume_handoff
+                · REQUERIM. -> NO toca código/git -> checkpoint(borrador) + post_message; handoff queda PENDING
+                                              │
+                          auto_runs (idempotencia) + interactions (dashboard)
+```
+
+**Decisiones clave:**
+
+- **Motor `claude -p` headless**, no el Agent SDK: corre con la suscripción de Claude Code
+  (sin API key de pago) y reutiliza al mismo "cerebro". El experimento del cockpit se frenó
+  justamente por el costo del SDK; esto lo evita.
+- **Sandbox de solo lectura**: allowlist estrecha (`Read`/`Grep`/`Glob` + tools del hub para
+  responder/borradorear), **sin** `Write`/`Edit`/`Bash`, y `--permission-mode default` ⇒ en
+  headless lo no permitido se **deniega** (no pregunta). El agente nunca edita ni toca git.
+- **Idempotencia** vía `auto_runs` (UNIQUE `item_type+item_id`): una corrida por item, aunque
+  el daemon reinicie.
+- **Watermark**: por defecto solo procesa items creados tras arrancar, para no re-disparar el
+  backlog viejo (`--backlog` lo incluye a propósito).
+- **Opt-in por proyecto** (`listener/config.json`): arranca conservador; el usuario habilita
+  qué sistemas pueden auto-responder.
+- **El listener escribe directo en `hub.db`** (como el dashboard), respetando que solo *lee*
+  las tablas de `projects-hub`; su bitácora `auto_runs` vive en el espacio de `nexus-hub`.
 
 ## Manejo del contexto
 
@@ -95,5 +131,5 @@ El límite de contexto del chat se respeta con tres defensas:
 | 1 | Poblado de capacidades de un proyecto piloto ✅ |
 | 2 | Skill orquestador (comportamiento del cerebro) ✅ |
 | 3 | Dashboard de monitoreo ✅ |
+| 5 | Actuadores asistidos: listener autónomo (auto-responde + borradores con aprobación humana) ✅ |
 | 4 | Sensores externos (p. ej. Slack → bandeja de requerimientos) |
-| 5 | Actuadores asistidos (borradores con aprobación humana) |
