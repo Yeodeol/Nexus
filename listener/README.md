@@ -54,6 +54,22 @@ Para que corra solo (sin consola), registralo como Tarea Programada (`--once` ca
 .\listener\register_task.ps1 -IntervalMinutes 5
 ```
 
+### Toggle de 1 clic (encender/apagar a demanda)
+
+Si preferís tenerlo **apagado** y prenderlo solo cuando lo necesitás, `nexus_toggle.ps1` es
+un interruptor: el mismo clic **arranca** el daemon en bucle (~tiempo real, sin consola, vía
+`pythonw`) si está apagado, o lo **detiene** si está encendido. Avisa el nuevo estado con un
+popup. Detecta el estado por la línea de comando del proceso (sin PID-file).
+
+Crea un acceso directo en el escritorio que lo dispare:
+
+```powershell
+$ws=New-Object -ComObject WScript.Shell; $l=$ws.CreateShortcut("$([Environment]::GetFolderPath('Desktop'))\Nexus Listener (ON-OFF).lnk"); $l.TargetPath="$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"; $l.Arguments='-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "'+$PSScriptRoot+'\nexus_toggle.ps1"'; $l.WorkingDirectory=$PSScriptRoot; $l.Save()
+```
+
+Logs del daemon: `~/.claude-projects-hub/nexus_listener.log` (y `.err.log`). Bajá
+`poll_interval` en `config.json` si querés que escuche aún más seguido que cada 15s.
+
 ## Cómo lo gatilla una sesión
 
 - **Consulta** (duda): `ask_provider(from_project="A", question="...", to_project="B")`
