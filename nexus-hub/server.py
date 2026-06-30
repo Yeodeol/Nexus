@@ -8,6 +8,7 @@ Agrega tablas nuevas para coordinar trabajo que cruza varios repos.
 import sqlite3
 import json
 import re
+import time
 from pathlib import Path
 from datetime import datetime
 from mcp.server.fastmcp import FastMCP
@@ -128,6 +129,27 @@ def _providers_for(conn, project):
             (project, c["name"], c["category"])).fetchall()
         provs.update(r["project"] for r in rows)
     return provs
+
+
+def _wait_for_answer(from_project, target, qid, timeout):
+    """Espera (polling cada 3s) una respuesta de 'target' a 'from_project' posterior a la
+    pregunta 'qid'. Devuelve el row (dict) o None si expira. Correlacion simple por id>qid
+    (suficiente para un flujo de usuario secuencial); marca la respuesta como leida al
+    entregarla, para no duplicarla en el buzon."""
+    deadline = time.monotonic() + max(5, timeout)
+    while time.monotonic() < deadline:
+        time.sleep(3)
+        with db() as conn:
+            row = conn.execute(
+                "SELECT id, text, kind, created_at FROM messages "
+                "WHERE to_project=? AND from_project=? AND id>? AND kind<>'question' "
+                "ORDER BY id ASC LIMIT 1",
+                (from_project, target, qid)).fetchone()
+            if row:
+                conn.execute("UPDATE messages SET status='read', read_at=? WHERE id=?",
+                             (now(), row["id"]))
+                return dict(row)
+    return None
 
 
 def _slugify(text):
@@ -546,13 +568,15 @@ def read_messages(project: str, include_read: bool = False, mark_read: bool = Tr
 # Consultas con auto-respuesta (gatillan al listener autonomo)
 # --------------------------------------------------------------------------
 @mcp.tool()
-def ask_provider(from_project: str, question: str, to_project: str = "") -> str:
-    """Pregunta algo a OTRO sistema y deja la consulta lista para que el listener la
-    AUTO-RESPONDA (sin abrir su sesion a mano). Si 'to_project' viene vacio, deduce el
-    proveedor desde el mapa (lo que 'from_project' consume y quien lo provee); si hay varios
-    candidatos los devuelve para que elijas. La respuesta llegara al buzon de 'from_project'
-    (read_messages) cuando el listener despierte al proveedor. Para empujar trabajo accionable
-    (un requerimiento), usa send_handoff; para una duda, usa esto."""
+def ask_provider(from_project: str, question: str, to_project: str = "",
+                 wait: bool = True, timeout: int = 120) -> str:
+    """Pregunta algo a OTRO sistema y, por defecto (wait=True), ESPERA la respuesta y te la
+    devuelve aca mismo (no tenes que ir al buzon despues). El listener despierta al proveedor
+    headless, este investiga read-only y responde; ask_provider hace polling hasta 'timeout'
+    segundos y retorna la respuesta. Requiere el daemon (listener) ENCENDIDO. Si 'to_project'
+    viene vacio, deduce el proveedor desde el mapa (lo que 'from_project' consume y quien lo
+    provee). wait=False solo encola y vuelve al toque. Para empujar trabajo accionable (un
+    requerimiento) usa send_handoff; para una duda, usa esto."""
     question = (question or "").strip()
     if not question:
         return "La pregunta esta vacia."
@@ -578,16 +602,35 @@ def ask_provider(from_project: str, question: str, to_project: str = "") -> str:
                 return ("No pude deducir el proveedor desde el mapa (¿'" + from_project +
                         "' no declara lo que consume?). Indica to_project explicito, o declara "
                         "la dependencia con declare_capability para que el ruteo sea automatico.")
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO messages(from_project, to_project, text, status, kind, created_at) "
             "VALUES (?,?,?, 'unread', 'question', ?)",
             (from_project, target, question, now()))
+        qid = cur.lastrowid
+
+    if not wait:
+        return json.dumps({
+            "status": "encolada",
+            "from": from_project,
+            "to": target,
+            "nota": (f"Consulta encolada para '{target}'. El listener la auto-respondera; la "
+                     f"respuesta llegara al buzon de '{from_project}' (read_messages)."),
+        }, indent=2, ensure_ascii=False)
+
+    ans = _wait_for_answer(from_project, target, qid, timeout)
+    if ans:
+        return json.dumps({
+            "status": "answered",
+            "from": target,
+            "to": from_project,
+            "answer": ans["text"],
+        }, indent=2, ensure_ascii=False)
     return json.dumps({
-        "status": "encolada",
+        "status": "pending",
         "from": from_project,
         "to": target,
-        "nota": (f"Consulta encolada para '{target}'. El listener la auto-respondera; la "
-                 f"respuesta llegara al buzon de '{from_project}' (read_messages)."),
+        "nota": (f"No llego respuesta en {timeout}s. ¿El listener (daemon) esta encendido? La "
+                 f"consulta sigue encolada: cuando responda, mirala con read_messages('{from_project}')."),
     }, indent=2, ensure_ascii=False)
 
 
