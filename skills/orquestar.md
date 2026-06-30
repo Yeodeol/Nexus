@@ -38,5 +38,17 @@ Objetivo del usuario (puede venir en `$ARGUMENTS` o en su mensaje): $ARGUMENTS
 - **Contexto liviano:** apoyate en subagentes (aislan la lectura pesada) y en checkpoints (persisten el avance). No arrastres codigo entero al contexto del cerebro.
 - **Comandos shell para el usuario:** PowerShell, una sola linea con `;`, sin `cd` al inicio.
 
+## Auto-resolución (listener)
+
+Si el daemon `listener/nexus_listener.py` está corriendo, los `send_handoff` y las consultas
+`ask_provider` dirigidas a un proyecto **opt-in** se **auto-resuelven**: el sistema destino
+despierta solo (Claude headless) y, para una **consulta simple**, deja la respuesta en el
+**buzón** del que preguntó (revisá con `read_messages` al arrancar). Para un **requerimiento**,
+deja un **borrador de alcance** (`checkpoint`) y el handoff queda **pendiente** para el humano.
+
+Por eso, para *averiguar algo* de otro sistema preferí `ask_provider(from, question, to)` y
+esperá la respuesta en tu buzón; reservá `send_handoff` para *empujar* trabajo accionable.
+Mirá qué se auto-resolvió con `list_auto_runs`.
+
 ## Si el MCP nexus-hub no responde
 Verifica que sus tools esten cargados. Si no, el usuario debe reiniciar Claude (los MCP cargan al inicio). Mientras tanto, puedes leer/escribir el estado directo en `~/.claude-projects-hub/hub.db` (tabla `capabilities`, `interactions`, etc.) como fallback.

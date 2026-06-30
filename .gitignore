@@ -14,3 +14,6 @@ __pycache__/
 # Entorno y logs
 .env
 *.log
+
+# Config local del listener (opt-in de proyectos reales; no versionar)
+listener/config.json
