@@ -22,13 +22,31 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   API key. Reutiliza al mismo cerebro en modo no-interactivo.
 - **Sandbox de solo lectura** para el agente autónomo: allowlist sin `Write`/`Edit`/`Bash`,
   `--permission-mode default` (deniega lo no listado). Nunca edita ni toca git.
-- **Idempotencia** del listener vía tabla `auto_runs` (UNIQUE `item_type+item_id`).
+- **Idempotencia con reintentos** del listener: `auto_runs` (UNIQUE `item_type+item_id`) +
+  columna `attempts`; un item en error se reintenta tras `retry_cooldown` hasta
+  `1+max_retries` intentos (antes quedaba muerto para siempre). Mensajes en error quedan
+  `unread` a propósito (el anti-duplicado real es `auto_runs`).
 - **Watermark**: el listener solo procesa items nuevos por defecto (no re-dispara el backlog).
 - **Opt-in por proyecto** en `listener/config.json` (gitignored; no filtra nombres reales).
 - **Una sola base de datos**, sin sincronizar dos almacenes.
+- **Cockpit sobre tools agregadoras, no chat propio:** `nexus_boot` (arranque en 1 llamada),
+  `nexus_overview` (visión global) y `nexus_search` (búsqueda global) + skill `/nexus`.
+  Para la búsqueda se descartó FTS5 (triggers de sincronización) por LIKE tokenizado en
+  Python: el hub tiene cientos de filas, no miles.
+- **Fichas de conocimiento** (tabla `knowledge`, UNIQUE project+topic): memoria profunda por
+  proyecto; las refresca el listener en idle con un agente cuya única escritura permitida es
+  `save_knowledge`.
+- **Auto-log de interacciones:** `ask_provider` y `get_project_context(from_project=)`
+  insertan en `interactions` solos (7 filas en 2 meses demostraron que el log manual no
+  funciona); `log_interaction` queda como complemento.
 
 ## 3. Flujos y arquitectura
 
+- **Arranque de sesión:** `nexus_boot(proyecto)` — 1 llamada con handoffs + buzón +
+  dependencias + estado + checkpoints + fichas (reemplaza la secuencia de 4-5 tools).
+- **Cockpit (sesión única, skill `/nexus`):** cascada de costo para consultas:
+  `nexus_search` → `get_knowledge` → `get_project_context` → subagente al repo (último
+  recurso). Lo aprendido se persiste (`save_knowledge` / `declare_capability`).
 - **Auto-servicio (averiguar):** `get_project_context` / `resolve_dependencies` /
   `find_providers`. Buzón asíncrono: `post_message` / `read_messages` (`kind`:
   `note`/`question`/`answer`).
@@ -38,6 +56,9 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   (borrador) + aviso; el handoff queda **pending** para el humano.
 - **Entrada de consultas:** `ask_provider(from, question, to="")` deja `kind='question'`
   (deduce proveedor si no se indica). El listener la toma y la auto-responde.
+- **Fichas en idle:** sin items pendientes, el listener refresca fichas vencidas
+  (`knowledge_refresh_days`, 1 por ciclo; `--refresh-knowledge` fuerza todas). Logs
+  completos de cada corrida en `~/.claude-projects-hub/listener-runs/`.
 - **Coordinación de ramas:** `create_coordinated_feature` + `update_branch_state`.
 
 ## 4. Errores y soluciones
@@ -61,12 +82,15 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 
 ## 6. Pendientes
 
-- **Desplegar** `nexus-hub/server.py` a `~/mcp-servers/` y reiniciar Claude para exponer
-  `ask_provider` / `list_auto_runs` / `post_message(kind=)` a las sesiones.
+- **Reiniciar Claude** tras desplegar para exponer las tools nuevas (`nexus_boot`,
+  `nexus_overview`, `nexus_search`, `save_knowledge`, `get_knowledge`) a las sesiones.
+- **Poblar fichas iniciales:** correr `python listener/nexus_listener.py --once --refresh-knowledge`
+  (o dejar el daemon en idle) para generar las primeras fichas de los responders.
+- **Triage humano** de los ~13 handoffs `pending` acumulados (visibles en `nexus_overview`).
 - **Fase 4:** sensores externos (Slack → bandeja de requerimientos) que generen `ask_provider`
   / handoffs automáticamente.
-- Posible: notificación push/Slack cuando el listener auto-responde; vista de `auto_runs` en
-  el dashboard.
+- Posible: notificación push/Slack cuando el listener auto-responde; vista de `auto_runs` y
+  fichas en el dashboard.
 
 <!-- Dependencias entre proyectos (Nexus): si este repo CONSUME de otros, esta sección la
      mantiene tools/sync_nexus_deps.py. -->

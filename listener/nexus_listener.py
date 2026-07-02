@@ -34,11 +34,12 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 DB_PATH = Path.home() / ".claude-projects-hub" / "hub.db"
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
+RUNS_DIR = Path.home() / ".claude-projects-hub" / "listener-runs"
 
 DEFAULTS = {
     "responders": [],          # proyectos que PUEDEN auto-responder (opt-in). Vacio = nadie.
@@ -47,6 +48,11 @@ DEFAULTS = {
     "max_concurrent": 2,       # agentes en paralelo
     "model": "sonnet",         # modelo del resolver (suscripcion; sonnet = buen balance)
     "result_max_chars": 2000,  # cuanto guardar de la salida del agente en auto_runs
+    "max_retries": 1,          # reintentos EXTRA de un item que quedo en error (0 = ninguno)
+    "retry_cooldown": 300,     # segundos de espera antes de reintentar un error
+    "knowledge_refresh_days": 7,   # refresca fichas mas viejas que esto (0 = desactivado)
+    "knowledge_projects": [],  # proyectos con fichas auto-refrescadas (vacio = responders)
+    "knowledge_timeout": 600,  # timeout del agente de fichas (explora mas que un Q&A)
 }
 
 # Allowlist ESTRECHA de tools del agente: solo lectura + tools del hub necesarias para
@@ -62,12 +68,16 @@ ALLOWED_TOOLS = [
     "mcp__nexus-hub__post_message",
     "mcp__nexus-hub__read_messages",
     "mcp__nexus-hub__list_auto_runs",
+    "mcp__nexus-hub__get_knowledge",
+    "mcp__nexus-hub__nexus_search",
     "mcp__projects-hub__get_project",
     "mcp__projects-hub__list_projects",
     "mcp__projects-hub__get_state",
     "mcp__projects-hub__get_pending_handoffs",
     "mcp__projects-hub__consume_handoff",
 ]
+# El agente de FICHAS ademas puede escribir conocimiento (solo tabla knowledge del hub).
+KNOWLEDGE_TOOLS = ALLOWED_TOOLS + ["mcp__nexus-hub__save_knowledge"]
 DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit", "Bash"]
 
 
@@ -121,10 +131,22 @@ def db():
         finished_at TEXT,
         UNIQUE(item_type, item_id)
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS knowledge (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT,
+        UNIQUE(project, topic)
+    )""")
     try:
         conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT DEFAULT 'note'")
     except sqlite3.OperationalError:
         pass  # la columna ya existe (o la tabla aun no; el MCP la crea)
+    try:
+        conn.execute("ALTER TABLE auto_runs ADD COLUMN attempts INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
@@ -132,22 +154,29 @@ def db():
 # --------------------------------------------------------------------------
 # Deteccion de items a resolver
 # --------------------------------------------------------------------------
-def pending_items(conn, responders, project_filter, since_iso):
+def pending_items(conn, cfg, project_filter, since_iso):
     """Lista de items (dict) pendientes de auto-resolver para los proyectos opt-in:
-    handoffs 'pending' y messages 'unread' kind='question' aun no procesados (no en
-    auto_runs) y, si hay watermark, creados despues de 'since_iso'."""
+    handoffs 'pending' y messages 'unread' kind='question' aun no procesados y, si hay
+    watermark, creados despues de 'since_iso'. Un item en auto_runs solo se excluye si
+    termino bien O agoto los reintentos O su error es muy reciente (retry_cooldown):
+    asi un fallo transitorio no mata el item para siempre."""
+    responders = cfg["responders"]
     if not responders:
         return []
     targets = [p for p in responders if (not project_filter or p == project_filter)]
     if not targets:
         return []
     ph = ",".join("?" for _ in targets)
+    max_attempts = 1 + max(0, int(cfg.get("max_retries", 0)))
+    retry_cutoff = (datetime.now() - timedelta(seconds=cfg.get("retry_cooldown", 300))).isoformat()
+    # Excluye del sondeo todo item ya corrido, SALVO errores reintentables "enfriados".
+    excl = ("SELECT item_id FROM auto_runs WHERE item_type=? AND NOT "
+            "(status='error' AND attempts < ? AND finished_at <= ?)")
     items = []
 
     q = (f"SELECT id, from_project, to_project, stage, payload, created_at FROM handoffs "
-         f"WHERE status='pending' AND to_project IN ({ph}) "
-         f"AND id NOT IN (SELECT item_id FROM auto_runs WHERE item_type='handoff')")
-    params = list(targets)
+         f"WHERE status='pending' AND to_project IN ({ph}) AND id NOT IN ({excl})")
+    params = list(targets) + ["handoff", max_attempts, retry_cutoff]
     if since_iso:
         q += " AND created_at > ?"; params.append(since_iso)
     for r in conn.execute(q, params):
@@ -155,10 +184,13 @@ def pending_items(conn, responders, project_filter, since_iso):
                       "to": r["to_project"], "stage": r["stage"] or "",
                       "text": r["payload"] or "", "created_at": r["created_at"]})
 
+    # Nota: los messages en error siguen 'unread' (finish solo marca leidos los exitosos
+    # via el propio flujo), pero el filtro real es auto_runs; el status del mensaje se
+    # actualiza al cerrar la corrida.
     q = (f"SELECT id, from_project, to_project, text, created_at FROM messages "
-         f"WHERE status='unread' AND kind='question' AND to_project IN ({ph}) "
-         f"AND id NOT IN (SELECT item_id FROM auto_runs WHERE item_type='message')")
-    params = list(targets)
+         f"WHERE kind='question' AND to_project IN ({ph}) AND id NOT IN ({excl}) "
+         f"AND status='unread'")
+    params = list(targets) + ["message", max_attempts, retry_cutoff]
     if since_iso:
         q += " AND created_at > ?"; params.append(since_iso)
     for r in conn.execute(q, params):
@@ -175,12 +207,20 @@ def project_path(conn, name):
     return row["path"] if row and row["path"] else None
 
 
-def claim(conn, item):
-    """Reserva el item en auto_runs (idempotente). Devuelve True si lo reservamos nosotros."""
+def claim(conn, item, max_attempts):
+    """Reserva el item en auto_runs (idempotente). Devuelve True si lo reservamos nosotros.
+    Si el item quedo en 'error' y aun tiene reintentos, lo re-reclama sumando el intento."""
     cur = conn.execute(
-        "INSERT OR IGNORE INTO auto_runs(item_type, item_id, project, status, created_at) "
-        "VALUES (?,?,?, 'claimed', ?)",
+        "INSERT OR IGNORE INTO auto_runs(item_type, item_id, project, status, attempts, created_at) "
+        "VALUES (?,?,?, 'claimed', 1, ?)",
         (item["type"], item["id"], item["to"], now_iso()))
+    if cur.rowcount == 1:
+        conn.commit()
+        return True
+    cur = conn.execute(
+        "UPDATE auto_runs SET status='claimed', attempts=attempts+1 "
+        "WHERE item_type=? AND item_id=? AND status='error' AND attempts < ?",
+        (item["type"], item["id"], max_attempts))
     conn.commit()
     return cur.rowcount == 1
 
@@ -189,7 +229,9 @@ def finish(conn, item, status, result):
     conn.execute(
         "UPDATE auto_runs SET status=?, result=?, finished_at=? WHERE item_type=? AND item_id=?",
         (status, result, now_iso(), item["type"], item["id"]))
-    if item["type"] == "message":
+    # Un mensaje en error queda 'unread' a proposito: asi puede reintentarse (el filtro
+    # anti-duplicado real es auto_runs).
+    if item["type"] == "message" and status != "error":
         conn.execute("UPDATE messages SET status='read', read_at=? WHERE id=?",
                      (now_iso(), item["id"]))
     # Log de interaccion (resolver B -> origen A) para el monitoreo / dashboard.
@@ -249,6 +291,22 @@ def user_prompt(item):
     )
 
 
+def save_run_log(tag, cmd, rc, stdout, stderr):
+    """Persiste la corrida COMPLETA (comando, rc, stdout, stderr) en un archivo, para
+    diagnosticar errores que en auto_runs quedan truncados/vacios. Devuelve la ruta."""
+    try:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        f = RUNS_DIR / f"{ts}_{tag}.log"
+        f.write_text(
+            f"# {ts}  rc={rc}\n# cmd: {' '.join(str(c) for c in cmd[:4])} ...\n\n"
+            f"## STDOUT\n{stdout or '(vacio)'}\n\n## STDERR\n{stderr or '(vacio)'}\n",
+            encoding="utf-8", errors="replace")
+        return str(f)
+    except OSError:
+        return ""
+
+
 def run_agent(claude_bin, cwd, model, timeout, item):
     """Lanza `claude -p` headless en cwd. Devuelve (status, result_text)."""
     cmd = [
@@ -261,11 +319,13 @@ def run_agent(claude_bin, cwd, model, timeout, item):
         "--output-format", "json",
         "--add-dir", cwd,
     ]
+    tag = f"{item['type']}{item['id']}_{item['to']}"
     try:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "error", f"timeout tras {timeout}s"
+    except subprocess.TimeoutExpired as exc:
+        logf = save_run_log(tag, cmd, "timeout", exc.stdout, exc.stderr)
+        return "error", f"timeout tras {timeout}s (log: {logf})"
     except (OSError, ValueError) as exc:
         return "error", f"fallo al lanzar claude: {exc}"
 
@@ -279,8 +339,9 @@ def run_agent(claude_bin, cwd, model, timeout, item):
         pass  # no era JSON; nos quedamos con stdout crudo
 
     if proc.returncode != 0:
+        logf = save_run_log(tag, cmd, proc.returncode, proc.stdout, proc.stderr)
         err = (proc.stderr or "").strip()[-600:]
-        return "error", f"claude rc={proc.returncode}: {err or result_text[-600:]}"
+        return "error", f"claude rc={proc.returncode}: {err or result_text[-600:]} (log: {logf})"
 
     status = "done"
     for line in reversed(result_text.splitlines()):
@@ -297,9 +358,10 @@ def run_agent(claude_bin, cwd, model, timeout, item):
 
 def process_item(cfg, claude_bin, item):
     """Reclama, ejecuta y cierra un item. Una conexion por hilo (sqlite no comparte conn)."""
+    max_attempts = 1 + max(0, int(cfg.get("max_retries", 0)))
     conn = db()
     try:
-        if not claim(conn, item):
+        if not claim(conn, item, max_attempts):
             return f"skip (ya reclamado) {item['type']}#{item['id']}"
         path = project_path(conn, item["to"])
         if not path or not Path(path).exists():
@@ -314,12 +376,131 @@ def process_item(cfg, claude_bin, item):
 
 
 # --------------------------------------------------------------------------
+# Fichas de conocimiento (refresh en idle)
+# --------------------------------------------------------------------------
+def knowledge_system_prompt(project):
+    return (
+        f"Sos el DOCUMENTADOR AUTONOMO del proyecto '{project}' en Nexus. Tu unico trabajo "
+        "es generar/actualizar FICHAS DE CONOCIMIENTO del repo en el hub, para que otras "
+        "sesiones respondan consultas sin releer el codigo.\n\n"
+        "REGLAS DURAS: SOLO LECTURA del repo (Read/Grep/Glob). NUNCA modifiques archivos ni "
+        "uses git. La UNICA escritura permitida es save_knowledge (tabla del hub).\n\n"
+        "QUE HACER:\n"
+        "1. Explora el repo (CLAUDE.md, README, codigo fuente principal).\n"
+        f"2. Guarda 3 a 6 fichas con save_knowledge(project='{project}', topic=..., "
+        "content=...). Topics sugeridos (usa los que apliquen):\n"
+        "   - 'resumen': que es, stack, objetivo, como se corre.\n"
+        "   - 'endpoints-contratos': endpoints/lambdas/funciones publicas con input/output REAL.\n"
+        "   - 'datos': tablas/modelos/esquemas principales.\n"
+        "   - 'flujos-clave': los 3-5 flujos de negocio centrales y que archivos los implementan.\n"
+        "   - 'integraciones': que consume de otros sistemas y que le provee a quien.\n"
+        "3. Contenido CONCRETO: rutas de archivo, firmas, contratos reales. Nada de vaguedades. "
+        "Espanol de Chile. Cada ficha entre 500 y 3000 caracteres.\n\n"
+        "TU ULTIMA LINEA debe ser exactamente 'RESULTADO: refreshed'."
+    )
+
+
+def stale_knowledge(conn, cfg, project_filter, force=False):
+    """Proyectos cuyas fichas no existen o son mas viejas que knowledge_refresh_days."""
+    days = int(cfg.get("knowledge_refresh_days", 0))
+    if days <= 0 and not force:
+        return []
+    projs = cfg.get("knowledge_projects") or cfg.get("responders") or []
+    if project_filter:
+        projs = [p for p in projs if p == project_filter]
+    if force:
+        return list(projs)
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    out = []
+    for p in projs:
+        row = conn.execute(
+            "SELECT MAX(updated_at) AS m FROM knowledge WHERE project=?", (p,)).fetchone()
+        if not row["m"] or row["m"] < cutoff:
+            out.append(p)
+    return out
+
+
+def refresh_knowledge(cfg, claude_bin, project):
+    """Lanza el agente documentador sobre un proyecto y deja bitacora en auto_runs
+    (item_type='knowledge', item_id=epoch: es un log recurrente, no idempotencia)."""
+    conn = db()
+    try:
+        path = project_path(conn, project)
+        if not path or not Path(path).exists():
+            return f"knowledge skipped (sin ruta) {project}"
+        cmd = [
+            claude_bin, "-p",
+            f"Genera/actualiza las fichas de conocimiento del proyecto '{project}' "
+            "segun tu rol (ver system prompt).",
+            "--append-system-prompt", knowledge_system_prompt(project),
+            "--allowedTools", *KNOWLEDGE_TOOLS,
+            "--disallowedTools", *DISALLOWED_TOOLS,
+            "--permission-mode", "default",
+            "--model", cfg["model"],
+            "--output-format", "json",
+            "--add-dir", path,
+        ]
+        log(f"refrescando fichas de conocimiento de '{project}'...")
+        started = now_iso()
+        try:
+            proc = subprocess.run(cmd, cwd=path, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
+                                  timeout=cfg.get("knowledge_timeout", 600))
+            rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            rc, stdout, stderr = "timeout", exc.stdout, exc.stderr
+        except (OSError, ValueError) as exc:
+            rc, stdout, stderr = "launch-error", "", str(exc)
+        out = (stdout or "").strip()
+        try:
+            data = json.loads(out)
+            if isinstance(data, dict):
+                out = data.get("result") or data.get("text") or out
+        except ValueError:
+            pass
+        ok = (rc == 0)
+        status = "refreshed" if ok else "error"
+        logf = "" if ok else save_run_log(f"knowledge_{project}", cmd, rc, stdout, stderr)
+        result = out if ok else f"rc={rc}: {(stderr or out or '')[-400:]} (log: {logf})"
+        conn.execute(
+            "INSERT OR IGNORE INTO auto_runs(item_type, item_id, project, status, attempts, "
+            "result, created_at, finished_at) VALUES ('knowledge', ?, ?, ?, 1, ?, ?, ?)",
+            (int(time.time()), project, status, result[: cfg["result_max_chars"]],
+             started, now_iso()))
+        conn.commit()
+        return f"knowledge {status} -> {project}"
+    finally:
+        conn.close()
+
+
+def knowledge_cycle(cfg, claude_bin, project_filter, dry_run, attempted, force=False):
+    """Refresca a lo mas UN proyecto por ciclo (no compite con los items). 'attempted'
+    (dict en memoria) evita martillar el mismo proyecto si falla: reintenta en 6h."""
+    conn = db()
+    try:
+        stale = stale_knowledge(conn, cfg, project_filter, force)
+    finally:
+        conn.close()
+    stale = [p for p in stale if time.monotonic() - attempted.get(p, -10**9) > 6 * 3600]
+    if not stale:
+        return 0
+    if dry_run:
+        log(f"DRY-RUN: fichas por refrescar: {', '.join(stale)}")
+        return 0
+    targets = stale if force else stale[:1]
+    for target in targets:
+        attempted[target] = time.monotonic()
+        log("  " + refresh_knowledge(cfg, claude_bin, target))
+    return len(targets)
+
+
+# --------------------------------------------------------------------------
 # Bucle principal
 # --------------------------------------------------------------------------
 def cycle(cfg, claude_bin, project_filter, since_iso, dry_run):
     conn = db()
     try:
-        items = pending_items(conn, cfg["responders"], project_filter, since_iso)
+        items = pending_items(conn, cfg, project_filter, since_iso)
     finally:
         conn.close()
     if not items:
@@ -344,6 +525,8 @@ def main():
     ap.add_argument("--backlog", action="store_true", help="incluye items viejos (ignora el watermark)")
     ap.add_argument("--project", default="", help="procesar solo este proyecto (debe ser opt-in)")
     ap.add_argument("--since", default="", help="watermark ISO explicito (solo items posteriores)")
+    ap.add_argument("--refresh-knowledge", action="store_true",
+                    help="fuerza el refresh de fichas de conocimiento ahora (ignora frescura)")
     args = ap.parse_args()
 
     if not DB_PATH.exists():
@@ -365,14 +548,22 @@ def main():
     log(f"Nexus listener arrancado (modo={mode}, responders={cfg['responders']}, "
         f"model={cfg['model']}, watermark={'(backlog)' if not since_iso else since_iso}).")
 
+    attempted = {}  # cooldown en memoria de refresh de fichas fallidos/recientes
+
     if args.once or args.dry_run:
         n = cycle(cfg, claude_bin, project_filter, since_iso, args.dry_run)
-        log(f"Listo. {n} item(s) procesado(s).")
+        k = knowledge_cycle(cfg, claude_bin, project_filter, args.dry_run, attempted,
+                            force=args.refresh_knowledge)
+        log(f"Listo. {n} item(s) procesado(s), {k} refresh(es) de fichas.")
         return
 
     try:
+        force_kn = args.refresh_knowledge
         while True:
-            cycle(cfg, claude_bin, project_filter, since_iso, dry_run=False)
+            n = cycle(cfg, claude_bin, project_filter, since_iso, dry_run=False)
+            if n == 0:  # idle: aprovecha el ciclo para refrescar fichas (max 1, salvo force)
+                knowledge_cycle(cfg, claude_bin, project_filter, False, attempted, force=force_kn)
+                force_kn = False
             time.sleep(cfg["poll_interval"])
     except KeyboardInterrupt:
         log("Detenido por el usuario.")

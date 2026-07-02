@@ -11,10 +11,16 @@ bitácora (`auto_runs`, visible con `list_auto_runs` y en el dashboard).
 ## Qué hace el agente despertado
 
 - **Consulta simple** (una duda: de dónde sale X, qué devuelve Y, si Z es reutilizable, un
-  contrato) → investiga **read-only** (Read/Grep/Glob + `get_project_context`) y responde con
-  `post_message(kind='answer')`; si vino como handoff, lo cierra con `consume_handoff`.
+  contrato) → investiga **read-only** (Read/Grep/Glob + `get_project_context` + fichas via
+  `get_knowledge`/`nexus_search`) y responde con `post_message(kind='answer')`; si vino como
+  handoff, lo cierra con `consume_handoff`.
 - **Requerimiento** (pide cambiar código) → **NO** toca código ni git: redacta un **borrador
   de alcance** (`checkpoint`) y avisa por el buzón; deja el handoff **pending** para vos.
+- **Idle (sin items)** → refresca las **fichas de conocimiento** vencidas de los proyectos
+  configurados (`knowledge_projects`, default = `responders`): un agente **documentador**
+  read-only explora el repo y guarda fichas (`save_knowledge`: resumen, endpoints-contratos,
+  datos, flujos-clave, integraciones). Máximo un refresh por ciclo; frescura
+  `knowledge_refresh_days` (0 = desactivado). Forzalo con `--refresh-knowledge`.
 
 ## Seguridad
 
@@ -22,7 +28,10 @@ bitácora (`auto_runs`, visible con `list_auto_runs` y en el dashboard).
   sin `delete_project`/`send_handoff`/`declare_capability` (ver `ALLOWED_TOOLS` en el `.py`).
 - `--permission-mode default` en headless ⇒ lo no permitido se **deniega** (no pregunta).
 - **Timeout** por agente, **concurrencia** acotada, **opt-in** por `config.json`, e
-  **idempotencia** (tabla `auto_runs`: una corrida por item).
+  **idempotencia con reintentos** (tabla `auto_runs`: una corrida por item; si queda en
+  **error** se reintenta tras `retry_cooldown` segundos, hasta `1+max_retries` intentos).
+- **Log completo por corrida** (stdout+stderr) en `~/.claude-projects-hub/listener-runs/`
+  — el `result` de `auto_runs` referencia el archivo cuando hay error.
 - **Watermark**: por defecto solo procesa items **nuevos** (creados tras arrancar), así no
   re-dispara el backlog viejo. Usá `--backlog` para incluirlo a propósito.
 - Motor: la **suscripción** de Claude Code (`claude -p`), sin API key de pago.
@@ -33,9 +42,14 @@ Copiá `config.example.json` a `config.json` (este último está *gitignored*) y
 `responders` los proyectos que **pueden** auto-responder:
 
 ```json
-{ "responders": ["respaldos-scraps", "g-back"], "poll_interval": 15, "timeout": 240,
-  "max_concurrent": 2, "model": "sonnet" }
+{ "responders": ["proyecto-a", "proyecto-b"], "poll_interval": 15, "timeout": 240,
+  "max_concurrent": 2, "model": "sonnet", "max_retries": 1, "retry_cooldown": 300,
+  "knowledge_refresh_days": 7, "knowledge_projects": [], "knowledge_timeout": 600 }
 ```
+
+- `max_retries` / `retry_cooldown`: reintentos extra de items en error y su espera.
+- `knowledge_refresh_days`: frescura de las fichas (0 desactiva el refresh en idle).
+- `knowledge_projects`: qué proyectos documentar (vacío = los `responders`).
 
 Override del modelo por entorno: `NEXUS_RESOLVER_MODEL`.
 
@@ -86,3 +100,4 @@ Logs del daemon: `~/.claude-projects-hub/nexus_listener.log` (y `.err.log`). Baj
 | `--backlog` | incluye items viejos (ignora el watermark) |
 | `--project X` | solo ese proyecto (debe ser opt-in) |
 | `--since ISO` | watermark explícito (solo items posteriores) |
+| `--refresh-knowledge` | fuerza el refresh de TODAS las fichas ahora (ignora frescura) |

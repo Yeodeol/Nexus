@@ -99,11 +99,27 @@ def db():
         finished_at TEXT,
         UNIQUE(item_type, item_id)
     )""")
+    # Fichas de conocimiento por proyecto: la "memoria profunda" del hub. Permiten
+    # responder consultas sin releer el repo cada vez. Las refresca el listener en idle
+    # o cualquier sesion que aprenda algo (save_knowledge).
+    conn.execute("""CREATE TABLE IF NOT EXISTS knowledge (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT,
+        UNIQUE(project, topic)
+    )""")
     # ALTER defensivo: agrega 'kind' a messages de DBs viejas (CREATE no lo hace).
     try:
         conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT DEFAULT 'note'")
     except sqlite3.OperationalError:
         pass  # la columna ya existe
+    # ALTER defensivo: contador de intentos para que el listener pueda reintentar errores.
+    try:
+        conn.execute("ALTER TABLE auto_runs ADD COLUMN attempts INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -158,6 +174,206 @@ def _slugify(text):
     return s.strip("-")
 
 
+def _log_interaction(conn, from_project, to_project, intent, outcome, capability="", feature=""):
+    """Insert directo en interactions (auto-log desde otras tools, para que el monitoreo
+    no dependa de que el cerebro se acuerde de llamar log_interaction)."""
+    conn.execute(
+        "INSERT INTO interactions(from_project, to_project, intent, capability, outcome, feature, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (from_project, to_project, (intent or "")[:120], capability, outcome, feature, now()))
+
+
+def _es_pendiente(value):
+    """Misma convencion que el panel: tag explicito al inicio gana; fallback por keywords."""
+    v = (value or "").strip().upper()
+    if v.startswith(("[PEND", "[PENDIENTE")):
+        return True
+    if v.startswith(("[LISTO", "[OK", "[DONE", "[COMPLETADO", "[ANALISIS", "[INFO")):
+        return False
+    return "PENDIENTE" in v or "FALTA" in v
+
+
+def _snippet(text, tokens, width=180):
+    """Fragmento del texto alrededor del primer token que matchee (para nexus_search)."""
+    t = text or ""
+    low = t.lower()
+    pos = min((low.find(tok) for tok in tokens if low.find(tok) >= 0), default=0)
+    start = max(0, pos - width // 3)
+    frag = t[start:start + width].replace("\n", " ").strip()
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if start + width < len(t) else ""
+    return f"{prefix}{frag}{suffix}"
+
+
+# --------------------------------------------------------------------------
+# Arranque de sesion y cockpit (todo en UNA llamada)
+# --------------------------------------------------------------------------
+@mcp.tool()
+def nexus_boot(project: str, mark_read: bool = True) -> str:
+    """Arranque de sesion en UNA sola llamada: reemplaza la secuencia
+    get_pending_handoffs + read_messages + resolve_dependencies + get_state. Devuelve el
+    proyecto, sus handoffs pendientes, mensajes nuevos (los marca leidos salvo
+    mark_read=False), dependencias (que consume y quien lo provee), estado, ultimos
+    checkpoints y fichas de conocimiento disponibles. Si el proyecto no esta registrado,
+    lo indica (registralo con register_project y repite)."""
+    with db() as conn:
+        row = conn.execute(
+            "SELECT name, path, description, status, updated_at FROM projects WHERE name=?",
+            (project,)).fetchone()
+        if not row:
+            return json.dumps({
+                "project": project, "registrado": False,
+                "hint": ("Proyecto no existe en el hub. Registralo con "
+                         "register_project(name, path, description) y repite nexus_boot."),
+            }, indent=2, ensure_ascii=False)
+        handoffs = conn.execute(
+            "SELECT id, from_project, stage, payload, created_at FROM handoffs "
+            "WHERE to_project=? AND status='pending' ORDER BY created_at", (project,)).fetchall()
+        msgs = conn.execute(
+            "SELECT id, from_project, text, kind, created_at FROM messages "
+            "WHERE to_project=? AND status='unread' ORDER BY created_at", (project,)).fetchall()
+        out_msgs = [dict(m) for m in msgs]
+        if mark_read and out_msgs:
+            conn.executemany("UPDATE messages SET status='read', read_at=? WHERE id=?",
+                             [(now(), m["id"]) for m in out_msgs])
+        consumes = conn.execute(
+            "SELECT name, category FROM capabilities WHERE project=? AND kind='consumes'",
+            (project,)).fetchall()
+        deps = []
+        for c in consumes:
+            provs = conn.execute(
+                "SELECT DISTINCT project FROM capabilities WHERE kind='provides' AND project<>? "
+                "AND (name=? OR (category<>'' AND category=?))",
+                (project, c["name"], c["category"])).fetchall()
+            deps.append({"consume": c["name"], "provisto_por": [p["project"] for p in provs]})
+        state = conn.execute(
+            "SELECT key, value, updated_at FROM state WHERE project=? "
+            "ORDER BY updated_at DESC LIMIT 15", (project,)).fetchall()
+        cps = conn.execute(
+            "SELECT summary, created_at FROM checkpoints WHERE project=? "
+            "ORDER BY created_at DESC LIMIT 2", (project,)).fetchall()
+        topics = conn.execute(
+            "SELECT topic, updated_at FROM knowledge WHERE project=? ORDER BY topic",
+            (project,)).fetchall()
+    def _trunc(t, n=600):
+        t = t or ""
+        return t if len(t) <= n else t[:n] + "...[truncado]"
+    return json.dumps({
+        "project": row["name"], "path": row["path"], "description": row["description"],
+        "handoffs_pendientes": [
+            {**dict(h), "payload": _trunc(h["payload"])} for h in handoffs],
+        "mensajes_nuevos": out_msgs,
+        "dependencias": deps,
+        "estado": [dict(s) for s in state],
+        "ultimos_checkpoints": [dict(c) for c in cps],
+        "fichas_conocimiento": [dict(t) for t in topics],
+        "hint": ("Handoffs: procesalos y cierra con consume_handoff(id). Fichas: leelas con "
+                 "get_knowledge antes de mandar subagentes a leer repos."),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def nexus_overview() -> str:
+    """Vision GLOBAL del hub en una llamada (modo cockpit): todos los proyectos, tareas
+    pendientes ([PEND] en state), handoffs pendientes, mensajes sin leer, features
+    coordinadas abiertas, frescura de las fichas de conocimiento y ultimas corridas del
+    listener. Para consultar y gestionar todos los proyectos desde una sola sesion."""
+    with db() as conn:
+        projects = conn.execute(
+            "SELECT name, description, updated_at FROM projects ORDER BY name").fetchall()
+        state = conn.execute(
+            "SELECT project, key, value, updated_at FROM state ORDER BY updated_at DESC").fetchall()
+        pendientes = [dict(s) for s in state if _es_pendiente(s["value"])]
+        handoffs = conn.execute(
+            "SELECT id, from_project, to_project, stage, substr(payload,1,150) AS payload, created_at "
+            "FROM handoffs WHERE status='pending' ORDER BY created_at").fetchall()
+        unread = conn.execute(
+            "SELECT to_project, count(*) AS n FROM messages WHERE status='unread' "
+            "GROUP BY to_project").fetchall()
+        feats = conn.execute(
+            "SELECT slug, branch, status, updated_at FROM coordinated_features "
+            "WHERE status<>'merged' ORDER BY updated_at DESC").fetchall()
+        runs = conn.execute(
+            "SELECT item_type, item_id, project, status, created_at FROM auto_runs "
+            "ORDER BY created_at DESC LIMIT 10").fetchall()
+        know = conn.execute(
+            "SELECT project, count(*) AS fichas, MAX(updated_at) AS ultima "
+            "FROM knowledge GROUP BY project").fetchall()
+    return json.dumps({
+        "proyectos": [dict(p) for p in projects],
+        "tareas_pendientes": pendientes,
+        "handoffs_pendientes": [dict(h) for h in handoffs],
+        "mensajes_sin_leer": {r["to_project"]: r["n"] for r in unread},
+        "features_abiertas": [dict(f) for f in feats],
+        "conocimiento": [dict(k) for k in know],
+        "listener_ultimas_corridas": [dict(r) for r in runs],
+        "hint": ("Para profundizar en un proyecto: get_project_context / get_knowledge. "
+                 "Para buscar algo en todo el hub: nexus_search."),
+    }, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def nexus_search(query: str, limit: int = 30) -> str:
+    """Busqueda GLOBAL en toda la memoria del hub en una llamada: capacidades, fichas de
+    conocimiento, checkpoints, estado, handoffs, mensajes y proyectos. Tokeniza la consulta
+    (espacios, '_', '-') y exige que CADA token aparezca en el registro. Devuelve hits con
+    fuente, proyecto y snippet. Uso tipico: '¿donde esta X?' sin saber en que proyecto."""
+    tokens = [t for t in re.split(r"[\s_\-]+", (query or "").lower().strip()) if t]
+    if not tokens:
+        return "La consulta esta vacia."
+
+    def match(*fields):
+        hay = " ".join(f or "" for f in fields).lower()
+        return all(t in hay for t in tokens)
+
+    hits = []
+    with db() as conn:
+        for r in conn.execute("SELECT name, description FROM projects"):
+            if match(r["name"], r["description"]):
+                hits.append({"fuente": "project", "project": r["name"],
+                             "snippet": _snippet(r["description"], tokens), "fecha": ""})
+        for r in conn.execute(
+                "SELECT project, kind, name, category, contract, notes, updated_at FROM capabilities"):
+            if match(r["name"], r["category"], r["contract"], r["notes"]):
+                hits.append({"fuente": f"capability/{r['kind']}", "project": r["project"],
+                             "snippet": f"{r['name']} [{r['category'] or '-'}] " +
+                                        _snippet(r["contract"] or r["notes"], tokens, 140),
+                             "fecha": r["updated_at"] or ""})
+        for r in conn.execute("SELECT project, topic, content, updated_at FROM knowledge"):
+            if match(r["topic"], r["content"]):
+                hits.append({"fuente": f"knowledge/{r['topic']}", "project": r["project"],
+                             "snippet": _snippet(r["content"], tokens), "fecha": r["updated_at"] or ""})
+        for r in conn.execute("SELECT project, summary, created_at FROM checkpoints"):
+            if match(r["summary"]):
+                hits.append({"fuente": "checkpoint", "project": r["project"],
+                             "snippet": _snippet(r["summary"], tokens), "fecha": r["created_at"] or ""})
+        for r in conn.execute("SELECT project, key, value, updated_at FROM state"):
+            if match(r["key"], r["value"]):
+                hits.append({"fuente": f"state/{r['key']}", "project": r["project"],
+                             "snippet": _snippet(r["value"], tokens), "fecha": r["updated_at"] or ""})
+        for r in conn.execute(
+                "SELECT id, from_project, to_project, stage, payload, status, created_at FROM handoffs"):
+            if match(r["stage"], r["payload"]):
+                hits.append({"fuente": f"handoff#{r['id']}/{r['status']}",
+                             "project": f"{r['from_project']}->{r['to_project']}",
+                             "snippet": _snippet(r["payload"], tokens), "fecha": r["created_at"] or ""})
+        for r in conn.execute(
+                "SELECT id, from_project, to_project, text, kind, created_at FROM messages"):
+            if match(r["text"]):
+                hits.append({"fuente": f"message/{r['kind']}",
+                             "project": f"{r['from_project'] or '?'}->{r['to_project']}",
+                             "snippet": _snippet(r["text"], tokens), "fecha": r["created_at"] or ""})
+    if not hits:
+        return f"Sin resultados para '{query}' en el hub."
+    hits.sort(key=lambda h: h["fecha"], reverse=True)
+    total = len(hits)
+    hits = hits[:max(1, limit)]
+    out = {"query": query, "total": total, "hits": hits}
+    if total > len(hits):
+        out["nota"] = f"Mostrando {len(hits)} de {total}; sube 'limit' o afina la consulta."
+    return json.dumps(out, indent=2, ensure_ascii=False)
+
+
 # --------------------------------------------------------------------------
 # Gestion de proyectos
 # --------------------------------------------------------------------------
@@ -193,10 +409,12 @@ def delete_project(name: str, purge_data: bool = False) -> str:
 
 
 @mcp.tool()
-def get_project_context(project: str, max_chars: int = 8000) -> str:
+def get_project_context(project: str, max_chars: int = 8000, from_project: str = "") -> str:
     """Averigua el contexto de OTRO proyecto SIN pedir handoff: devuelve su descripcion,
-    ruta, lo que PROVEE/CONSUME y el contenido de su CLAUDE.md (si existe en la raiz). Asi
-    una sesion entiende por si misma que hace y que necesita otro sistema y se auto-sirve."""
+    ruta, lo que PROVEE/CONSUME, sus fichas de conocimiento (topics) y el contenido de su
+    CLAUDE.md (si existe en la raiz). Asi una sesion entiende por si misma que hace y que
+    necesita otro sistema y se auto-sirve. Pasa from_project=<tu proyecto> para que la
+    consulta quede auto-registrada en interactions (monitoreo sin esfuerzo)."""
     with db() as conn:
         row = conn.execute(
             "SELECT name, path, description FROM projects WHERE name=?", (project,)).fetchone()
@@ -205,12 +423,18 @@ def get_project_context(project: str, max_chars: int = 8000) -> str:
         caps = conn.execute(
             "SELECT kind, name, category, contract, notes FROM capabilities WHERE project=? "
             "ORDER BY kind, name", (project,)).fetchall()
+        topics = conn.execute(
+            "SELECT topic, updated_at FROM knowledge WHERE project=? ORDER BY topic",
+            (project,)).fetchall()
+        if from_project and from_project != project:
+            _log_interaction(conn, from_project, project, "get_project_context", "consulted")
     info = {
         "project": row["name"],
         "path": row["path"],
         "description": row["description"],
         "provides": [dict(c) for c in caps if c["kind"] == "provides"],
         "consumes": [dict(c) for c in caps if c["kind"] == "consumes"],
+        "knowledge_topics": [dict(t) for t in topics],
         "claude_md": None,
     }
     base = Path(row["path"]) if row["path"] else None
@@ -229,6 +453,8 @@ def get_project_context(project: str, max_chars: int = 8000) -> str:
                 pass
     if info["claude_md"] is None:
         info["nota"] = "Sin CLAUDE.md en la raiz; usa 'path', las capacidades y get_checkpoints."
+    if info["knowledge_topics"]:
+        info["hint"] = "Hay fichas de conocimiento: leelas con get_knowledge(project, topic) antes de leer el repo."
     return json.dumps(info, indent=2, ensure_ascii=False)
 
 
@@ -516,6 +742,57 @@ def get_checkpoints(project: str, limit: int = 5) -> str:
 
 
 # --------------------------------------------------------------------------
+# Fichas de conocimiento (memoria profunda por proyecto)
+# --------------------------------------------------------------------------
+@mcp.tool()
+def save_knowledge(project: str, topic: str, content: str) -> str:
+    """Guarda o actualiza una FICHA de conocimiento de un proyecto. topic en kebab-case
+    (ej 'resumen', 'endpoints-contratos', 'datos', 'flujos-clave', 'integraciones').
+    content = texto concreto con rutas de archivo, firmas y contratos reales (no vaguedades).
+    Idempotente (UPSERT por project+topic). Las fichas permiten responder consultas desde el
+    hub sin releer el repo: las refresca el listener en idle o cualquier sesion que aprenda
+    algo nuevo."""
+    topic = _slugify(topic)
+    if not topic:
+        return "topic invalido (quedo vacio tras normalizar a kebab-case)."
+    content = (content or "").strip()
+    if not content:
+        return "content vacio: no hay nada que guardar."
+    with db() as conn:
+        if not _project_exists(conn, project):
+            return f"Proyecto '{project}' no existe en el hub."
+        conn.execute(
+            """INSERT INTO knowledge(project, topic, content, updated_at)
+               VALUES (?,?,?,?)
+               ON CONFLICT(project, topic) DO UPDATE SET
+                 content=excluded.content, updated_at=excluded.updated_at""",
+            (project, topic, content, now()))
+    return f"Ficha '{topic}' guardada para '{project}'."
+
+
+@mcp.tool()
+def get_knowledge(project: str, topic: str = "") -> str:
+    """Lee las fichas de conocimiento de un proyecto. Sin topic: lista los topics con su
+    fecha. Con topic: devuelve el contenido completo de esa ficha. Consultalas ANTES de
+    mandar un subagente a leer el repo: para la mayoria de las dudas bastan."""
+    with db() as conn:
+        if topic:
+            row = conn.execute(
+                "SELECT topic, content, updated_at FROM knowledge WHERE project=? AND topic=?",
+                (project, _slugify(topic))).fetchone()
+            if not row:
+                return f"No hay ficha '{topic}' para '{project}'. Lista los topics sin el parametro."
+            return json.dumps(dict(row), indent=2, ensure_ascii=False)
+        rows = conn.execute(
+            "SELECT topic, length(content) AS chars, updated_at FROM knowledge "
+            "WHERE project=? ORDER BY topic", (project,)).fetchall()
+    if not rows:
+        return (f"'{project}' no tiene fichas de conocimiento aun. Se generan con el listener "
+                f"(refresh en idle) o a mano con save_knowledge.")
+    return json.dumps([dict(r) for r in rows], indent=2, ensure_ascii=False)
+
+
+# --------------------------------------------------------------------------
 # Buzon inter-sesion (mensajes asincronos ligeros entre proyectos)
 # --------------------------------------------------------------------------
 @mcp.tool()
@@ -607,6 +884,8 @@ def ask_provider(from_project: str, question: str, to_project: str = "",
             "VALUES (?,?,?, 'unread', 'question', ?)",
             (from_project, target, question, now()))
         qid = cur.lastrowid
+        # Auto-log para el monitoreo (no depende de log_interaction manual).
+        _log_interaction(conn, from_project, target, f"ask: {question}", "asked")
 
     if not wait:
         return json.dumps({

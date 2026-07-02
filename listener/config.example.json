@@ -5,5 +5,10 @@
   "timeout": 240,
   "max_concurrent": 2,
   "model": "sonnet",
-  "result_max_chars": 2000
+  "result_max_chars": 2000,
+  "max_retries": 1,
+  "retry_cooldown": 300,
+  "knowledge_refresh_days": 7,
+  "knowledge_projects": [],
+  "knowledge_timeout": 600
 }

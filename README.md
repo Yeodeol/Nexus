@@ -22,6 +22,8 @@ Cuando trabajas en varios proyectos en paralelo:
 - 🗺️ **Mapa de capacidades** — registra qué **provee** y qué **consume** cada proyecto (APIs, funciones, tablas, servicios).
 - 🧭 **Ruteo automático** — dado un objetivo en un proyecto, deduce qué otros proyectos están implicados y a quién consultar.
 - 🔎 **Auto-servicio** — cualquier sesión **averigua sola** el contexto de otro proyecto (`get_project_context` trae su `CLAUDE.md` y capacidades), sin esperar un handoff.
+- 🎛️ **Cockpit** — `nexus_overview` (visión global), `nexus_search` (búsqueda en TODO el hub) y `nexus_boot` (arranque de sesión en 1 llamada) permiten **consultar y gestionar todos los proyectos desde una única sesión** (skill [`/nexus`](skills/nexus.md)).
+- 📚 **Fichas de conocimiento** — memoria profunda por proyecto (`save_knowledge`/`get_knowledge`): endpoints, datos, flujos y contratos reales, refrescadas por el listener en idle. Las consultas se responden desde el hub sin releer los repos.
 - 💬 **Comunicación entre sesiones** — un buzón asíncrono (`post_message`/`read_messages`) para que sesiones de distintos proyectos se dejen preguntas y respuestas.
 - 🔗 **Handoffs** — para **empujar** trabajo entregable de un proyecto a otro (decisiones, contratos, pendientes a accionar).
 - 🤖 **Auto-resolución (listener)** — un daemon despierta al sistema destino con un Claude Code headless: **responde solo** las consultas simples y, para requerimientos, deja un **borrador de alcance** para tu aprobación (sin tocar código ni git). Ver [`listener/`](listener/README.md).
@@ -124,6 +126,10 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 ### `nexus-hub` (orquestación)
 | Tool | Para qué |
 |---|---|
+| `nexus_boot` | **Arranque de sesión en 1 llamada**: handoffs + buzón + dependencias + estado + checkpoints + fichas |
+| `nexus_overview` | **Visión global del hub** (cockpit): proyectos, pendientes `[PEND]`, handoffs, features, listener |
+| `nexus_search` | **Búsqueda global** en capacidades, fichas, checkpoints, estado, handoffs y mensajes |
+| `save_knowledge` / `get_knowledge` | **Fichas de conocimiento** por proyecto (memoria profunda: endpoints, datos, flujos) |
 | `delete_project` | Elimina un proyecto (seguro: no deja datos huérfanos) |
 | `declare_capability` | Declara qué **provee** o **consume** un proyecto |
 | `list_capabilities` / `find_providers` | Consulta el mapa de capacidades |
@@ -137,7 +143,9 @@ Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el 
 | `ask_provider` | Pregunta a otro sistema y deja la consulta para que el **listener la auto-responda** (deduce el proveedor si no lo indicás) |
 | `list_auto_runs` | Bitácora de lo que el listener auto-resolvió (estado y resultado) |
 
-> 🧭 El skill **`/orquestar`** (en [skills/orquestar.md](skills/orquestar.md)) es el "cómo pensar" del cerebro. Cópialo a `~/.claude/commands/` (Claude Code) para orquestar trabajo que cruza repos.
+> 🧭 Los skills (cópialos a `~/.claude/commands/` en Claude Code) son el "cómo pensar" del cerebro:
+> **`/orquestar`** ([skills/orquestar.md](skills/orquestar.md)) para **implementar** trabajo que cruza repos, y
+> **`/nexus`** ([skills/nexus.md](skills/nexus.md)) — el **cockpit**: consultar y gestionar todos los proyectos desde una única sesión.
 
 ### Ejemplo de uso (genérico)
 
@@ -173,8 +181,11 @@ suscripción, sin API key):
   de alcance** (`checkpoint`) y avisa; el handoff queda **pendiente** para tu aprobación.
 
 Seguridad: allowlist de tools de solo lectura (sin `Write`/`Edit`/`Bash`), permisos que
-**deniegan** lo no listado, timeout, opt-in por proyecto e idempotencia (`auto_runs`). Todo
-queda logueado y visible con `list_auto_runs` y en el dashboard. Guía completa en
+**deniegan** lo no listado, timeout, opt-in por proyecto e idempotencia (`auto_runs`). Los
+items que quedan en **error se reintentan** (con cooldown y tope de intentos) y cada corrida
+guarda su **log completo** en `~/.claude-projects-hub/listener-runs/`. En **idle**, el
+listener además **refresca las fichas de conocimiento** de los proyectos configurados. Todo
+queda visible con `list_auto_runs` y en el dashboard. Guía completa en
 [`listener/README.md`](listener/README.md).
 
 ```powershell
