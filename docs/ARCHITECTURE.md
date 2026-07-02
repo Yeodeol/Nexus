@@ -48,7 +48,8 @@ Nexus parte de una metáfora simple:
 | `feature_branches` | `id`, `feature_id`, `project`, `branch`, `state`, `pr_url`, `updated_at` | Estado de la rama por repo |
 | `checkpoints` | `id`, `project`, `summary`, `created_at` | Resúmenes de avance (memoria externa) |
 | `messages` | `id`, `from_project`, `to_project`, `text`, `status`, `kind`, `created_at`, `read_at` | Buzón asíncrono entre proyectos/sesiones (`kind`: `note`/`question`/`answer`) |
-| `auto_runs` | `id`, `item_type`, `item_id`, `project`, `status`, `result`, `created_at`, `finished_at` | Bitácora del listener autónomo (idempotencia: una corrida por item) |
+| `knowledge` | `id`, `project`, `topic`, `content`, `updated_at` (UNIQUE project+topic) | Fichas de conocimiento por proyecto (memoria profunda: endpoints, datos, flujos) |
+| `auto_runs` | `id`, `item_type`, `item_id`, `project`, `status`, `result`, `attempts`, `created_at`, `finished_at` | Bitácora del listener autónomo (idempotencia + reintentos de errores) |
 
 ## Flujo de orquestación
 
@@ -64,9 +65,30 @@ El ruteo no es magia: es **razonamiento sobre un mapa bien mantenido**. Mientras
 
 Los módulos MCP de Nexus están en la config **global** del cliente, así que **toda sesión, en cualquier proyecto, los tiene**. El modelo es de auto-servicio:
 
-- **Averiguar sin handoff:** cuando una sesión necesita algo de otro sistema, usa `resolve_dependencies` / `find_providers` para ubicarlo y `get_project_context(otro)` para traer su descripción, capacidades y su `CLAUDE.md`. Así entiende el otro proyecto por sí misma.
+- **Arranque en 1 llamada:** `nexus_boot(proyecto)` reemplaza la secuencia de inicio (handoffs pendientes + buzón + dependencias + estado): menos latencia y menos contexto quemado en cada sesión.
+- **Averiguar sin handoff:** cuando una sesión necesita algo de otro sistema, usa `nexus_search` (búsqueda global en todo el hub), `get_knowledge` (fichas), `resolve_dependencies` / `find_providers` para ubicarlo y `get_project_context(otro)` para traer su descripción, capacidades y su `CLAUDE.md`. Así entiende el otro proyecto por sí misma.
 - **Buzón entre sesiones:** `post_message` / `read_messages` deja mensajes asíncronos (preguntas, avisos, respuestas). Las sesiones son procesos independientes; el buzón persiste en `hub.db` y se lee al arrancar o al consultar.
 - **Handoffs** se reservan para *empujar* trabajo entregable que el otro debe accionar.
+- **Monitoreo sin esfuerzo:** `ask_provider` y `get_project_context(..., from_project=)` auto-registran la interacción en `interactions`; el grafo del dashboard se alimenta solo, sin depender de `log_interaction` manual.
+
+## Cockpit: una sesión para todos los proyectos
+
+El skill **`/nexus`** convierte cualquier sesión en el cockpit: `nexus_overview()` da la
+visión global (pendientes `[PEND]`, handoffs, features, fichas, listener) y las consultas
+se resuelven en cascada de costo: **1)** `nexus_search` sobre el hub → **2)** fichas
+(`get_knowledge`) → **3)** `get_project_context` → **4)** subagente al repo (última
+opción). Lo aprendido en el paso 4 se persiste (`save_knowledge` / `declare_capability`):
+el sistema aprende y la próxima consulta muere en los pasos 1-2.
+
+## Fichas de conocimiento (memoria profunda)
+
+La tabla `knowledge` guarda fichas por proyecto y topic (`resumen`,
+`endpoints-contratos`, `datos`, `flujos-clave`, `integraciones`): contenido concreto con
+rutas de archivo, firmas y contratos reales. Las genera y refresca el **listener en idle**
+(agente headless read-only cuya única escritura permitida es `save_knowledge`), con
+frescura configurable (`knowledge_refresh_days`). Cualquier sesión también puede
+guardarlas a mano. Esto convierte al hub de "mapa" en memoria consultable: la mayoría de
+las preguntas se responden sin releer los repos.
 
 ## Auto-resolución: el listener autónomo
 
@@ -94,8 +116,13 @@ Sesión A  --send_handoff / ask_provider-->  hub.db
 - **Sandbox de solo lectura**: allowlist estrecha (`Read`/`Grep`/`Glob` + tools del hub para
   responder/borradorear), **sin** `Write`/`Edit`/`Bash`, y `--permission-mode default` ⇒ en
   headless lo no permitido se **deniega** (no pregunta). El agente nunca edita ni toca git.
-- **Idempotencia** vía `auto_runs` (UNIQUE `item_type+item_id`): una corrida por item, aunque
-  el daemon reinicie.
+- **Idempotencia con reintentos** vía `auto_runs` (UNIQUE `item_type+item_id` + columna
+  `attempts`): una corrida por item, pero un item en **error** se reintenta (tras
+  `retry_cooldown`, hasta `1+max_retries` intentos) en vez de quedar muerto para siempre.
+- **Log completo por corrida** en `~/.claude-projects-hub/listener-runs/` (stdout+stderr),
+  porque el `result` truncado de `auto_runs` no basta para diagnosticar fallas.
+- **Refresh de fichas en idle**: cuando no hay items, el listener refresca las fichas de
+  conocimiento vencidas (una por ciclo), con un agente cuya única escritura es `save_knowledge`.
 - **Watermark**: por defecto solo procesa items creados tras arrancar, para no re-disparar el
   backlog viejo (`--backlog` lo incluye a propósito).
 - **Opt-in por proyecto** (`listener/config.json`): arranca conservador; el usuario habilita

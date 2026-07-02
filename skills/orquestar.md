@@ -13,9 +13,9 @@ Objetivo del usuario (puede venir en `$ARGUMENTS` o en su mensaje): $ARGUMENTS
 2. **Mapea dependencias.** Llama `resolve_dependencies(project, intent)` con el proyecto y una frase de la intencion. Te devuelve:
    - `dependencies[]`: que CONSUME el proyecto y, por cada cosa, `provided_by[]` (que otros proyectos lo proveen).
    - `recent_interactions[]`: que se hizo antes con esos proyectos.
-   - Si `dependencies` viene vacio, el mapa aun no esta poblado: usa `find_providers("<lo que busca el objetivo>")` y, si hace falta, declara lo que falte con `declare_capability` antes de seguir.
+   - Si `dependencies` viene vacio, el mapa aun no esta poblado: usa `find_providers("<lo que busca el objetivo>")` o `nexus_search("<terminos>")` (busca en TODO el hub) y, si hace falta, declara lo que falte con `declare_capability` antes de seguir.
 
-3. **Consulta a los proveedores (extremidades).** Por cada dependencia con `provided_by`, lanza un **subagente** (Agent / Explore) al repo del proveedor con una instruccion concreta: *"busca si ya existe X, trae el contrato real (input/output) y si es reutilizable o hay que extenderlo"*. El subagente devuelve **solo la conclusion**, no el codigo entero (asi el contexto se mantiene liviano). Si hay varios proveedores independientes, lanzalos en paralelo.
+3. **Consulta a los proveedores (extremidades).** Por cada dependencia con `provided_by`, ANTES de lanzar un subagente revisa las fichas del proveedor con `get_knowledge(proveedor)` — si la ficha trae el contrato, te ahorras el subagente. Si no basta, lanza un **subagente** (Agent / Explore) al repo del proveedor con una instruccion concreta: *"busca si ya existe X, trae el contrato real (input/output) y si es reutilizable o hay que extenderlo"*. El subagente devuelve **solo la conclusion**, no el codigo entero (asi el contexto se mantiene liviano). Si hay varios proveedores independientes, lanzalos en paralelo. Lo aprendido que sea estable, guardalo con `save_knowledge`.
 
 4. **Registra cada interaccion.** Tras consultar a un proveedor, llama `log_interaction(from_project=<objetivo>, to_project=<proveedor>, intent=..., capability=..., outcome=...)`. `outcome`: `reused` | `extended` | `created` | `consulted` | `noop`. Esto alimenta el monitoreo.
 
