@@ -16,11 +16,16 @@ bitácora (`auto_runs`, visible con `list_auto_runs` y en el dashboard).
   handoff, lo cierra con `consume_handoff`.
 - **Requerimiento** (pide cambiar código) → **NO** toca código ni git: redacta un **borrador
   de alcance** (`checkpoint`) y avisa por el buzón; deja el handoff **pending** para vos.
-- **Idle (sin items)** → refresca las **fichas de conocimiento** vencidas de los proyectos
+- **Idle (sin items)** → refresca las **fichas de conocimiento** de los proyectos
   configurados (`knowledge_projects`, default = `responders`): un agente **documentador**
-  read-only explora el repo y guarda fichas (`save_knowledge`: resumen, endpoints-contratos,
-  datos, flujos-clave, integraciones). Máximo un refresh por ciclo; frescura
-  `knowledge_refresh_days` (0 = desactivado). Forzalo con `--refresh-knowledge`.
+  read-only explora el repo, guarda fichas (`save_knowledge`) y mantiene el mapa de
+  capacidades (`declare_capability`). El refresh es **git-aware**: solo si el HEAD del repo
+  cambió desde la última ficha (la edad `knowledge_refresh_days` es fallback sin git; 0 =
+  desactivado). Máximo un refresh por ciclo; `--refresh-knowledge` fuerza todas.
+- **Git sync (opt-in)** → cada `git_sync_hours` actualiza los repos de `git_sync_projects`
+  de forma segura: `fetch` siempre, `pull --ff-only` **solo** si el repo está limpio y en la
+  rama default del remoto (nunca commit/merge/push/checkout; si no puede, reporta y no toca).
+  Pensado para repos donde sos consumidor (otro equipo desarrolla). `--git-sync` fuerza ahora.
 
 ## Seguridad
 
@@ -44,12 +49,16 @@ Copiá `config.example.json` a `config.json` (este último está *gitignored*) y
 ```json
 { "responders": ["proyecto-a", "proyecto-b"], "poll_interval": 15, "timeout": 240,
   "max_concurrent": 2, "model": "sonnet", "max_retries": 1, "retry_cooldown": 300,
-  "knowledge_refresh_days": 7, "knowledge_projects": [], "knowledge_timeout": 600 }
+  "knowledge_refresh_days": 7, "knowledge_projects": [], "knowledge_timeout": 600,
+  "git_sync_projects": [], "git_sync_hours": 24 }
 ```
 
 - `max_retries` / `retry_cooldown`: reintentos extra de items en error y su espera.
-- `knowledge_refresh_days`: frescura de las fichas (0 desactiva el refresh en idle).
+- `knowledge_refresh_days`: fallback por edad para repos sin git (0 desactiva el refresh).
 - `knowledge_projects`: qué proyectos documentar (vacío = los `responders`).
+- `git_sync_projects`: repos que se actualizan solos (pull ff-only con guardas). Poné acá
+  los proyectos donde sos consumidor pasivo.
+- `git_sync_hours`: cada cuántas horas corre el sync (0 = desactivado).
 
 Override del modelo por entorno: `NEXUS_RESOLVER_MODEL`.
 
@@ -101,3 +110,4 @@ Logs del daemon: `~/.claude-projects-hub/nexus_listener.log` (y `.err.log`). Baj
 | `--project X` | solo ese proyecto (debe ser opt-in) |
 | `--since ISO` | watermark explícito (solo items posteriores) |
 | `--refresh-knowledge` | fuerza el refresh de TODAS las fichas ahora (ignora frescura) |
+| `--git-sync` | fuerza el sync de repos ahora (ignora el calendario de `git_sync_hours`) |

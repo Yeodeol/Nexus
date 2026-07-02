@@ -24,6 +24,7 @@ Cuando trabajas en varios proyectos en paralelo:
 - 🔎 **Auto-servicio** — cualquier sesión **averigua sola** el contexto de otro proyecto (`get_project_context` trae su `CLAUDE.md` y capacidades), sin esperar un handoff.
 - 🎛️ **Cockpit** — `nexus_overview` (visión global), `nexus_search` (búsqueda en TODO el hub) y `nexus_boot` (arranque de sesión en 1 llamada) permiten **consultar y gestionar todos los proyectos desde una única sesión** (skill [`/nexus`](skills/nexus.md)).
 - 📚 **Fichas de conocimiento** — memoria profunda por proyecto (`save_knowledge`/`get_knowledge`): endpoints, datos, flujos y contratos reales, refrescadas por el listener en idle. Las consultas se responden desde el hub sin releer los repos.
+- 🫀 **Cerebro vivo** — las fichas se refrescan **cuando el repo cambia** (comparación de `git_commit`, no por edad) y los repos donde eres consumidor pasivo se actualizan solos (`git pull --ff-only` con guardas: solo repo limpio y en la rama default; nunca commit/merge/push).
 - 💬 **Comunicación entre sesiones** — un buzón asíncrono (`post_message`/`read_messages`) para que sesiones de distintos proyectos se dejen preguntas y respuestas.
 - 🔗 **Handoffs** — para **empujar** trabajo entregable de un proyecto a otro (decisiones, contratos, pendientes a accionar).
 - 🤖 **Auto-resolución (listener)** — un daemon despierta al sistema destino con un Claude Code headless: **responde solo** las consultas simples y, para requerimientos, deja un **borrador de alcance** para tu aprobación (sin tocar código ni git). Ver [`listener/`](listener/README.md).

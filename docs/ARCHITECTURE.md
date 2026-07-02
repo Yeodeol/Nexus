@@ -48,7 +48,7 @@ Nexus parte de una metáfora simple:
 | `feature_branches` | `id`, `feature_id`, `project`, `branch`, `state`, `pr_url`, `updated_at` | Estado de la rama por repo |
 | `checkpoints` | `id`, `project`, `summary`, `created_at` | Resúmenes de avance (memoria externa) |
 | `messages` | `id`, `from_project`, `to_project`, `text`, `status`, `kind`, `created_at`, `read_at` | Buzón asíncrono entre proyectos/sesiones (`kind`: `note`/`question`/`answer`) |
-| `knowledge` | `id`, `project`, `topic`, `content`, `updated_at` (UNIQUE project+topic) | Fichas de conocimiento por proyecto (memoria profunda: endpoints, datos, flujos) |
+| `knowledge` | `id`, `project`, `topic`, `content`, `updated_at`, `git_commit` (UNIQUE project+topic) | Fichas de conocimiento por proyecto (memoria profunda). `git_commit` = HEAD del repo al guardar: el refresh se decide por cambio de commit |
 | `auto_runs` | `id`, `item_type`, `item_id`, `project`, `status`, `result`, `attempts`, `created_at`, `finished_at` | Bitácora del listener autónomo (idempotencia + reintentos de errores) |
 
 ## Flujo de orquestación
@@ -85,10 +85,30 @@ el sistema aprende y la próxima consulta muere en los pasos 1-2.
 La tabla `knowledge` guarda fichas por proyecto y topic (`resumen`,
 `endpoints-contratos`, `datos`, `flujos-clave`, `integraciones`): contenido concreto con
 rutas de archivo, firmas y contratos reales. Las genera y refresca el **listener en idle**
-(agente headless read-only cuya única escritura permitida es `save_knowledge`), con
-frescura configurable (`knowledge_refresh_days`). Cualquier sesión también puede
-guardarlas a mano. Esto convierte al hub de "mapa" en memoria consultable: la mayoría de
-las preguntas se responden sin releer los repos.
+(agente headless read-only cuyas únicas escrituras permitidas son `save_knowledge` y
+`declare_capability` — de paso mantiene el mapa de capacidades). Cualquier sesión también
+puede guardarlas a mano. Esto convierte al hub de "mapa" en memoria consultable: la
+mayoría de las preguntas se responden sin releer los repos.
+
+## Cerebro vivo: fichas git-aware + sync de repos
+
+Dos mecanismos cierran el ciclo "el repo cambia → el cerebro se actualiza":
+
+1. **Refresh por cambio, no por edad.** Cada ficha guarda el `git_commit` (HEAD) del repo
+   al momento de crearse. En idle, el listener compara ese commit con el HEAD actual
+   (`git rev-parse`, solo lectura): si difieren, re-documenta; si son iguales, la ficha
+   está al día sin importar cuándo se escribió (cero corridas desperdiciadas).
+   `knowledge_refresh_days` queda como fallback por edad para rutas sin git.
+2. **Sync seguro de repos** (opt-in `git_sync_projects`, cada `git_sync_hours`, pensado
+   para repos donde el usuario es consumidor pasivo — p. ej. los que mantiene otro
+   equipo): `git fetch` siempre; `git pull --ff-only` **solo si** el repo está limpio
+   **y** parado en la rama default del remoto. Nunca hace commit, merge, push, rebase ni
+   checkout: si no puede avanzar limpio, reporta ("detrás N commits, en rama X: no se
+   toca") y sigue. Bitácora agregada en `auto_runs` (`item_type='git-sync'`).
+
+Encadenados: el sync diario avanza el repo → el HEAD cambia → el siguiente ciclo idle
+refresca las fichas → las consultas responden con la data del último cambio, sin
+intervención humana.
 
 ## Auto-resolución: el listener autónomo
 
