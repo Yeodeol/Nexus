@@ -34,8 +34,15 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   Para la búsqueda se descartó FTS5 (triggers de sincronización) por LIKE tokenizado en
   Python: el hub tiene cientos de filas, no miles.
 - **Fichas de conocimiento** (tabla `knowledge`, UNIQUE project+topic): memoria profunda por
-  proyecto; las refresca el listener en idle con un agente cuya única escritura permitida es
-  `save_knowledge`.
+  proyecto; las refresca el listener en idle con un agente cuyas únicas escrituras permitidas
+  son `save_knowledge` y `declare_capability` (mantiene también el mapa de capacidades).
+- **Cerebro vivo (git-aware):** cada ficha guarda el `git_commit` del repo al momento de
+  crearse; el refresh se decide por **cambio de HEAD**, no por edad (`knowledge_refresh_days`
+  queda como fallback para rutas sin git). Mismo commit = ficha al día aunque sea vieja.
+- **Sync seguro de repos** (opt-in `git_sync_projects`, cada `git_sync_hours`): `fetch`
+  siempre; `pull --ff-only` SOLO si el repo está limpio y en la rama default del remoto.
+  Nunca commit/merge/push/checkout; si no puede avanzar limpio, reporta y no toca. Un pull
+  cambia el HEAD → el siguiente ciclo refresca las fichas solo (ciclo cerrado).
 - **Auto-log de interacciones:** `ask_provider` y `get_project_context(from_project=)`
   insertan en `interactions` solos (7 filas en 2 meses demostraron que el log manual no
   funciona); `log_interaction` queda como complemento.
@@ -56,9 +63,12 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   (borrador) + aviso; el handoff queda **pending** para el humano.
 - **Entrada de consultas:** `ask_provider(from, question, to="")` deja `kind='question'`
   (deduce proveedor si no se indica). El listener la toma y la auto-responde.
-- **Fichas en idle:** sin items pendientes, el listener refresca fichas vencidas
-  (`knowledge_refresh_days`, 1 por ciclo; `--refresh-knowledge` fuerza todas). Logs
-  completos de cada corrida en `~/.claude-projects-hub/listener-runs/`.
+- **Fichas en idle:** sin items pendientes, el listener refresca fichas cuyo repo cambió de
+  commit (1 por ciclo; `--refresh-knowledge` fuerza todas). Logs completos de cada corrida
+  en `~/.claude-projects-hub/listener-runs/`.
+- **Git sync:** al inicio de cada ciclo, si pasaron `git_sync_hours` desde la última vez,
+  sincroniza los repos de `git_sync_projects` (bitácora agregada en `auto_runs`
+  item_type='git-sync'; `--git-sync` fuerza ahora).
 - **Coordinación de ramas:** `create_coordinated_feature` + `update_branch_state`.
 
 ## 4. Errores y soluciones

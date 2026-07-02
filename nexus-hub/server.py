@@ -8,6 +8,7 @@ Agrega tablas nuevas para coordinar trabajo que cruza varios repos.
 import sqlite3
 import json
 import re
+import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
@@ -120,6 +121,12 @@ def db():
         conn.execute("ALTER TABLE auto_runs ADD COLUMN attempts INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    # ALTER defensivo: commit del repo al momento de guardar la ficha (cerebro vivo:
+    # el listener refresca por CAMBIO de commit, no por edad).
+    try:
+        conn.execute("ALTER TABLE knowledge ADD COLUMN git_commit TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -191,6 +198,19 @@ def _es_pendiente(value):
     if v.startswith(("[LISTO", "[OK", "[DONE", "[COMPLETADO", "[ANALISIS", "[INFO")):
         return False
     return "PENDIENTE" in v or "FALTA" in v
+
+
+def _repo_head(path):
+    """HEAD actual del repo en 'path' (o '' si no es repo git / git no disponible).
+    Solo lectura: rev-parse no modifica nada."""
+    if not path:
+        return ""
+    try:
+        proc = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10)
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
 
 
 def _snippet(text, tokens, width=180):
@@ -759,15 +779,18 @@ def save_knowledge(project: str, topic: str, content: str) -> str:
     if not content:
         return "content vacio: no hay nada que guardar."
     with db() as conn:
-        if not _project_exists(conn, project):
+        row = conn.execute("SELECT path FROM projects WHERE name=?", (project,)).fetchone()
+        if not row:
             return f"Proyecto '{project}' no existe en el hub."
+        head = _repo_head(row["path"])
         conn.execute(
-            """INSERT INTO knowledge(project, topic, content, updated_at)
-               VALUES (?,?,?,?)
+            """INSERT INTO knowledge(project, topic, content, updated_at, git_commit)
+               VALUES (?,?,?,?,?)
                ON CONFLICT(project, topic) DO UPDATE SET
-                 content=excluded.content, updated_at=excluded.updated_at""",
-            (project, topic, content, now()))
-    return f"Ficha '{topic}' guardada para '{project}'."
+                 content=excluded.content, updated_at=excluded.updated_at,
+                 git_commit=excluded.git_commit""",
+            (project, topic, content, now(), head))
+    return f"Ficha '{topic}' guardada para '{project}' (commit {head[:8] or 'n/a'})."
 
 
 @mcp.tool()
@@ -784,7 +807,7 @@ def get_knowledge(project: str, topic: str = "") -> str:
                 return f"No hay ficha '{topic}' para '{project}'. Lista los topics sin el parametro."
             return json.dumps(dict(row), indent=2, ensure_ascii=False)
         rows = conn.execute(
-            "SELECT topic, length(content) AS chars, updated_at FROM knowledge "
+            "SELECT topic, length(content) AS chars, updated_at, git_commit FROM knowledge "
             "WHERE project=? ORDER BY topic", (project,)).fetchall()
     if not rows:
         return (f"'{project}' no tiene fichas de conocimiento aun. Se generan con el listener "

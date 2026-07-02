@@ -50,9 +50,11 @@ DEFAULTS = {
     "result_max_chars": 2000,  # cuanto guardar de la salida del agente en auto_runs
     "max_retries": 1,          # reintentos EXTRA de un item que quedo en error (0 = ninguno)
     "retry_cooldown": 300,     # segundos de espera antes de reintentar un error
-    "knowledge_refresh_days": 7,   # refresca fichas mas viejas que esto (0 = desactivado)
+    "knowledge_refresh_days": 7,   # fallback por edad si el repo no tiene git (0 = desactivado)
     "knowledge_projects": [],  # proyectos con fichas auto-refrescadas (vacio = responders)
     "knowledge_timeout": 600,  # timeout del agente de fichas (explora mas que un Q&A)
+    "git_sync_projects": [],   # repos que se actualizan solos (fetch + pull --ff-only con guardas)
+    "git_sync_hours": 24,      # cada cuantas horas corre el sync (0 = desactivado)
 }
 
 # Allowlist ESTRECHA de tools del agente: solo lectura + tools del hub necesarias para
@@ -76,8 +78,12 @@ ALLOWED_TOOLS = [
     "mcp__projects-hub__get_pending_handoffs",
     "mcp__projects-hub__consume_handoff",
 ]
-# El agente de FICHAS ademas puede escribir conocimiento (solo tabla knowledge del hub).
-KNOWLEDGE_TOOLS = ALLOWED_TOOLS + ["mcp__nexus-hub__save_knowledge"]
+# El agente de FICHAS ademas puede escribir conocimiento y mantener el mapa de
+# capacidades (ambas tablas del hub, UPSERT idempotente; nunca borra).
+KNOWLEDGE_TOOLS = ALLOWED_TOOLS + [
+    "mcp__nexus-hub__save_knowledge",
+    "mcp__nexus-hub__declare_capability",
+]
 DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit", "Bash"]
 
 
@@ -147,8 +153,31 @@ def db():
         conn.execute("ALTER TABLE auto_runs ADD COLUMN attempts INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE knowledge ADD COLUMN git_commit TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
+
+
+# --------------------------------------------------------------------------
+# Git de solo avance (cerebro vivo)
+# --------------------------------------------------------------------------
+def run_git(path, *args, timeout=60):
+    """Corre git -C <path> <args>. Devuelve (rc, stdout limpio). rc=-1 si no se pudo."""
+    try:
+        proc = subprocess.run(["git", "-C", str(path), *args],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout)
+        return proc.returncode, (proc.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return -1, ""
+
+
+def repo_head(path):
+    rc, out = run_git(path, "rev-parse", "HEAD", timeout=10)
+    return out if rc == 0 else ""
 
 
 # --------------------------------------------------------------------------
@@ -395,13 +424,22 @@ def knowledge_system_prompt(project):
         "   - 'flujos-clave': los 3-5 flujos de negocio centrales y que archivos los implementan.\n"
         "   - 'integraciones': que consume de otros sistemas y que le provee a quien.\n"
         "3. Contenido CONCRETO: rutas de archivo, firmas, contratos reales. Nada de vaguedades. "
-        "Espanol de Chile. Cada ficha entre 500 y 3000 caracteres.\n\n"
+        "Espanol de Chile. Cada ficha entre 500 y 3000 caracteres.\n"
+        "4. Ademas de las fichas, manten el MAPA de capacidades del hub: por cada "
+        "endpoint/lambda/servicio/tabla REAL que este repo OFRECE a otros sistemas, "
+        f"declare_capability(project='{project}', kind='provides', name=<kebab-case>, "
+        "category=<api|lambda|table|service|event>, contract=<input/output real>); por cada "
+        "dependencia de OTRO sistema que este repo usa, lo mismo con kind='consumes'. Solo "
+        "capacidades VERIFICADAS en el codigo (es UPSERT idempotente; no borra nada).\n\n"
         "TU ULTIMA LINEA debe ser exactamente 'RESULTADO: refreshed'."
     )
 
 
 def stale_knowledge(conn, cfg, project_filter, force=False):
-    """Proyectos cuyas fichas no existen o son mas viejas que knowledge_refresh_days."""
+    """Proyectos cuyas fichas requieren refresh (cerebro vivo). Criterio:
+    1) sin fichas; 2) el HEAD del repo CAMBIO desde la ultima ficha (git-aware: si el
+    commit no cambio, las fichas estan al dia sin importar la edad); 3) fallback por
+    edad (knowledge_refresh_days) solo cuando no hay info git para comparar."""
     days = int(cfg.get("knowledge_refresh_days", 0))
     if days <= 0 and not force:
         return []
@@ -414,8 +452,18 @@ def stale_knowledge(conn, cfg, project_filter, force=False):
     out = []
     for p in projs:
         row = conn.execute(
-            "SELECT MAX(updated_at) AS m FROM knowledge WHERE project=?", (p,)).fetchone()
-        if not row["m"] or row["m"] < cutoff:
+            "SELECT updated_at, git_commit FROM knowledge WHERE project=? "
+            "ORDER BY updated_at DESC LIMIT 1", (p,)).fetchone()
+        if not row:
+            out.append(p)
+            continue
+        stored = row["git_commit"] or ""
+        head = repo_head(project_path(conn, p) or "")
+        if head and stored:
+            if head != stored:
+                out.append(p)  # el repo cambio: la ficha quedo vieja
+            continue           # mismo commit: al dia, la edad no importa
+        if row["updated_at"] < cutoff:  # sin info git: fallback por edad
             out.append(p)
     return out
 
@@ -495,6 +543,90 @@ def knowledge_cycle(cfg, claude_bin, project_filter, dry_run, attempted, force=F
 
 
 # --------------------------------------------------------------------------
+# Sync seguro de repos (git de solo avance, opt-in)
+# --------------------------------------------------------------------------
+def sync_repo(path):
+    """Actualiza un repo de forma SEGURA: fetch siempre; pull --ff-only SOLO si el repo
+    esta limpio Y parado en la rama default del remoto. Nunca hace commit, merge, push,
+    rebase ni checkout: si no puede avanzar limpio, no toca nada y lo reporta."""
+    if not path or not (Path(path) / ".git").exists():
+        return "skip: sin repo git"
+    rc, _ = run_git(path, "fetch", "origin", "--quiet", timeout=120)
+    if rc != 0:
+        return "error: fetch fallo (remoto/credenciales)"
+    # rama default del remoto (origin/HEAD); fallback a main/master
+    rc, ref = run_git(path, "symbolic-ref", "refs/remotes/origin/HEAD", "--short")
+    default = ref.split("/", 1)[1] if rc == 0 and "/" in ref else ""
+    if not default:
+        for cand in ("main", "master"):
+            rc, _ = run_git(path, "rev-parse", "--verify", f"origin/{cand}")
+            if rc == 0:
+                default = cand
+                break
+    if not default:
+        return "skip: no pude determinar la rama default del remoto"
+    rc, behind = run_git(path, "rev-list", "--count", f"HEAD..origin/{default}")
+    behind = int(behind) if rc == 0 and behind.isdigit() else 0
+    if behind == 0:
+        return f"al dia con origin/{default}"
+    _, branch = run_git(path, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch != default:
+        return f"detras {behind} commit(s) de origin/{default} pero en rama '{branch}': NO se toca"
+    rc, dirty = run_git(path, "status", "--porcelain")
+    if rc != 0 or dirty:
+        return f"detras {behind} commit(s) pero con cambios locales sin commitear: NO se toca"
+    rc, _ = run_git(path, "pull", "--ff-only", "--quiet", timeout=180)
+    if rc != 0:
+        return "error: pull --ff-only fallo (historia divergente); no se toco nada"
+    return f"actualizado +{behind} commit(s) desde origin/{default}"
+
+
+def git_sync_due(conn, cfg):
+    """True si toca correr el sync (ultima corrida 'git-sync' hace mas de git_sync_hours)."""
+    hours = int(cfg.get("git_sync_hours", 0))
+    if hours <= 0 or not cfg.get("git_sync_projects"):
+        return False
+    row = conn.execute(
+        "SELECT MAX(created_at) AS m FROM auto_runs WHERE item_type='git-sync'").fetchone()
+    if not row["m"]:
+        return True
+    return row["m"] < (datetime.now() - timedelta(hours=hours)).isoformat()
+
+
+def git_sync_cycle(cfg, project_filter, dry_run, force=False):
+    """Sincroniza los repos opt-in (git_sync_projects) si corresponde por calendario.
+    Deja bitacora agregada en auto_runs (item_type='git-sync'). Tras un pull exitoso el
+    HEAD cambia, asi que el proximo knowledge_cycle refresca las fichas solo."""
+    conn = db()
+    try:
+        if not force and not git_sync_due(conn, cfg):
+            return 0
+        projs = cfg.get("git_sync_projects") or []
+        if project_filter:
+            projs = [p for p in projs if p == project_filter]
+        if not projs:
+            return 0
+        if dry_run:
+            log(f"DRY-RUN: git sync revisaria: {', '.join(projs)}")
+            return 0
+        results = []
+        for p in projs:
+            path = project_path(conn, p)
+            res = sync_repo(path) if path else "skip: sin ruta en el hub"
+            log(f"  git-sync {p}: {res}")
+            results.append(f"{p}: {res}")
+        conn.execute(
+            "INSERT OR IGNORE INTO auto_runs(item_type, item_id, project, status, attempts, "
+            "result, created_at, finished_at) VALUES ('git-sync', ?, '*', 'done', 1, ?, ?, ?)",
+            (int(time.time()), " | ".join(results)[: cfg["result_max_chars"]],
+             now_iso(), now_iso()))
+        conn.commit()
+        return len(projs)
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------
 # Bucle principal
 # --------------------------------------------------------------------------
 def cycle(cfg, claude_bin, project_filter, since_iso, dry_run):
@@ -527,6 +659,8 @@ def main():
     ap.add_argument("--since", default="", help="watermark ISO explicito (solo items posteriores)")
     ap.add_argument("--refresh-knowledge", action="store_true",
                     help="fuerza el refresh de fichas de conocimiento ahora (ignora frescura)")
+    ap.add_argument("--git-sync", action="store_true",
+                    help="fuerza el sync de repos (git_sync_projects) ahora (ignora calendario)")
     args = ap.parse_args()
 
     if not DB_PATH.exists():
@@ -551,15 +685,21 @@ def main():
     attempted = {}  # cooldown en memoria de refresh de fichas fallidos/recientes
 
     if args.once or args.dry_run:
+        # Orden: sync de repos ANTES de fichas, para que un pull dispare el refresh al tiro.
+        g = git_sync_cycle(cfg, project_filter, args.dry_run, force=args.git_sync)
         n = cycle(cfg, claude_bin, project_filter, since_iso, args.dry_run)
         k = knowledge_cycle(cfg, claude_bin, project_filter, args.dry_run, attempted,
                             force=args.refresh_knowledge)
-        log(f"Listo. {n} item(s) procesado(s), {k} refresh(es) de fichas.")
+        log(f"Listo. {g} repo(s) sincronizado(s), {n} item(s) procesado(s), "
+            f"{k} refresh(es) de fichas.")
         return
 
     try:
         force_kn = args.refresh_knowledge
+        force_git = args.git_sync
         while True:
+            git_sync_cycle(cfg, project_filter, False, force=force_git)
+            force_git = False
             n = cycle(cfg, claude_bin, project_filter, since_iso, dry_run=False)
             if n == 0:  # idle: aprovecha el ciclo para refrescar fichas (max 1, salvo force)
                 knowledge_cycle(cfg, claude_bin, project_filter, False, attempted, force=force_kn)

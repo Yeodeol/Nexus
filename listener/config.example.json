@@ -10,5 +10,7 @@
   "retry_cooldown": 300,
   "knowledge_refresh_days": 7,
   "knowledge_projects": [],
-  "knowledge_timeout": 600
+  "knowledge_timeout": 600,
+  "git_sync_projects": [],
+  "git_sync_hours": 24
 }
