@@ -41,6 +41,14 @@ DB_PATH = Path.home() / ".claude-projects-hub" / "hub.db"
 CONFIG_PATH = Path(__file__).resolve().parent / "config.json"
 RUNS_DIR = Path.home() / ".claude-projects-hub" / "listener-runs"
 
+# El daemon corre con pythonw (sin consola): sin este flag, CADA subproceso (git,
+# claude) abriria una ventana de consola visible que aparece y se cierra.
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+# Cada cuanto revisar en idle si hay fichas por refrescar (evita correr git rev-parse
+# por proyecto en cada poll de 15s; el sondeo de items sigue siendo cada poll_interval).
+KNOWLEDGE_CHECK_SECONDS = 600
+
 DEFAULTS = {
     "responders": [],          # proyectos que PUEDEN auto-responder (opt-in). Vacio = nadie.
     "poll_interval": 15,       # segundos entre sondeos (modo daemon)
@@ -169,7 +177,8 @@ def run_git(path, *args, timeout=60):
     try:
         proc = subprocess.run(["git", "-C", str(path), *args],
                               capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=timeout)
+                              errors="replace", timeout=timeout,
+                              creationflags=CREATE_NO_WINDOW)
         return proc.returncode, (proc.stdout or "").strip()
     except (OSError, subprocess.TimeoutExpired):
         return -1, ""
@@ -351,7 +360,8 @@ def run_agent(claude_bin, cwd, model, timeout, item):
     tag = f"{item['type']}{item['id']}_{item['to']}"
     try:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=timeout)
+                              encoding="utf-8", errors="replace", timeout=timeout,
+                              creationflags=CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired as exc:
         logf = save_run_log(tag, cmd, "timeout", exc.stdout, exc.stderr)
         return "error", f"timeout tras {timeout}s (log: {logf})"
@@ -493,7 +503,8 @@ def refresh_knowledge(cfg, claude_bin, project):
         try:
             proc = subprocess.run(cmd, cwd=path, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace",
-                                  timeout=cfg.get("knowledge_timeout", 600))
+                                  timeout=cfg.get("knowledge_timeout", 600),
+                                  creationflags=CREATE_NO_WINDOW)
             rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
             rc, stdout, stderr = "timeout", exc.stdout, exc.stderr
@@ -697,13 +708,17 @@ def main():
     try:
         force_kn = args.refresh_knowledge
         force_git = args.git_sync
+        next_kn_check = 0.0  # chequeo de fichas throttled (no en cada poll de 15s)
         while True:
             git_sync_cycle(cfg, project_filter, False, force=force_git)
             force_git = False
             n = cycle(cfg, claude_bin, project_filter, since_iso, dry_run=False)
-            if n == 0:  # idle: aprovecha el ciclo para refrescar fichas (max 1, salvo force)
+            if n == 0 and (force_kn or time.monotonic() >= next_kn_check):
+                # idle: refresca fichas (max 1, salvo force); el chequeo git-aware corre
+                # subprocesos git, por eso va cada KNOWLEDGE_CHECK_SECONDS y no por poll.
                 knowledge_cycle(cfg, claude_bin, project_filter, False, attempted, force=force_kn)
                 force_kn = False
+                next_kn_check = time.monotonic() + KNOWLEDGE_CHECK_SECONDS
             time.sleep(cfg["poll_interval"])
     except KeyboardInterrupt:
         log("Detenido por el usuario.")
