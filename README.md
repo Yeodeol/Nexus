@@ -78,6 +78,8 @@ Ver el diseño completo en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Instalación
 
+> 🚀 **¿Primera vez?** Sigue la [**Guía de inicio**](docs/GETTING_STARTED.md) — de cero a operativo en ~20 minutos, incluyendo el bloque de instrucciones globales para que tu asistente use Nexus **solo** (paso que no es obvio y sin el cual las tools quedan sin usar).
+
 Requisitos: **Python 3.10+** y un cliente MCP (p. ej. [Claude Code](https://docs.claude.com/en/docs/claude-code) o Claude Desktop).
 
 ```powershell
@@ -111,6 +113,10 @@ Luego registra **ambos** servidores en tu cliente MCP. Ejemplo para Claude Code 
 ```
 
 Reinicia el cliente y ambos quedan disponibles. Las tablas se crean solas en el primer uso.
+
+Después de instalar, sigue la [Guía de inicio](docs/GETTING_STARTED.md) para: instalar los
+skills, agregar las **instrucciones globales del cerebro** (CLAUDE.md), poblar el hub y
+dejar el listener corriendo.
 
 ---
 
