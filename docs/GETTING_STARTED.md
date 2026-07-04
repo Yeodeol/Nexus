@@ -11,6 +11,22 @@ instrucciones del "cerebro", poblado inicial y verificación. Para el diseño ve
 - Un cliente MCP: [Claude Code](https://docs.claude.com/en/docs/claude-code) (recomendado;
   el listener lo usa como motor headless) o Claude Desktop.
 
+## Camino rápido (Windows) — `setup.ps1`
+
+Si estás en Windows, el script hace lo mecánico de los pasos 1, 2 y parte del 3-4:
+
+```powershell
+git clone https://github.com/Yeodeol/Nexus.git
+cd Nexus
+./setup.ps1        # crea venvs, instala deps, copia skills, crea config.json y genera el bloque mcpServers
+```
+
+Al terminar imprime los pasos manuales que quedan (registrar el MCP, pegar el bloque del
+cerebro, reiniciar y poblar el hub). No toca tu `~/.claude.json`: te deja el bloque listo en
+`mcp-servers.generated.json` para que lo pegues tú. Las **plantillas** que vas a usar están en
+[`templates/`](../templates): `mcp-servers.example.json`, `claude-global.example.md` y
+`seed-projects.example.json`. En Mac/Linux, sigue los pasos manuales de abajo.
+
 ## 1. Instalar
 
 ```powershell
@@ -76,6 +92,10 @@ En una sesión de tu cliente (cualquier carpeta):
 
 1. **Registra cada proyecto** (nombre lógico estable + ruta absoluta + descripción):
    `register_project("mi-api", "C:/repos/mi-api", "Backend de pagos — FastAPI")`.
+   > 💡 Atajo: copia [`templates/seed-projects.example.json`](../templates/seed-projects.example.json)
+   > a `seed-projects.json`, edítalo con tus proyectos y pídele a Claude: *"lee
+   > `seed-projects.json` y registra cada proyecto con `register_project` y sus capacidades
+   > con `declare_capability`"*. Hace los pasos 1 y 2 de una.
 2. **Siembra 2-3 capacidades** por proyecto para que el ruteo funcione desde el día uno:
    `declare_capability("mi-api", "provides", "cobro-tarjeta", "api", "POST /charge {amount} -> {id}")`
    y lo que cada proyecto consume (`kind="consumes"`). No busques completitud: el

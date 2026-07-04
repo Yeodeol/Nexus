@@ -1,0 +1,15 @@
+{
+  "_comment": "PLANTILLA. Reemplaza <RUTA-AL-CLON> por la ruta ABSOLUTA donde clonaste Nexus (ej. C:/Users/tu-usuario/Documents/Nexus) y fusiona la clave 'mcpServers' en tu ~/.claude.json (Claude Code) o el config de tu cliente MCP. Usa barras normales '/' aunque estes en Windows. Atajo: ejecuta ./setup.ps1 y te genera este bloque con las rutas ya resueltas en mcp-servers.generated.json.",
+  "mcpServers": {
+    "projects-hub": {
+      "type": "stdio",
+      "command": "<RUTA-AL-CLON>/Nexus/projects-hub/.venv/Scripts/python.exe",
+      "args": ["<RUTA-AL-CLON>/Nexus/projects-hub/server.py"]
+    },
+    "nexus-hub": {
+      "type": "stdio",
+      "command": "<RUTA-AL-CLON>/Nexus/nexus-hub/.venv/Scripts/python.exe",
+      "args": ["<RUTA-AL-CLON>/Nexus/nexus-hub/server.py"]
+    }
+  }
+}
