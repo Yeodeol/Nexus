@@ -46,6 +46,13 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 - **Auto-log de interacciones:** `ask_provider` y `get_project_context(from_project=)`
   insertan en `interactions` solos (7 filas en 2 meses demostraron que el log manual no
   funciona); `log_interaction` queda como complemento.
+- **Maquetas de despliegue (onboarding de un clon nuevo):** el repo entrega la plataforma, no
+  los datos (el `hub.db` es local y gitignored). Para que un tercero despliegue **su propio
+  Nexus** se agregó `setup.ps1` (bootstrap idempotente Windows) + `templates/` genéricos
+  (`mcp-servers.example.json`, `claude-global.example.md`, `seed-projects.example.json`).
+  `setup.ps1` **no toca** el `~/.claude.json` del usuario (config sensible): genera el bloque
+  `mcpServers` con rutas resueltas en `mcp-servers.generated.json` (gitignored) y lo imprime.
+  Las plantillas no llevan datos reales de RedCapital (el hub parte vacío por diseño).
 
 ## 3. Flujos y arquitectura
 

@@ -17,3 +17,9 @@ __pycache__/
 
 # Config local del listener (opt-in de proyectos reales; no versionar)
 listener/config.json
+
+# Generado por setup.ps1: bloque mcpServers con rutas absolutas locales
+mcp-servers.generated.json
+
+# Seed real de proyectos (copia de la plantilla; puede tener rutas/nombres reales)
+seed-projects.json

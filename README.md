@@ -93,6 +93,10 @@ projects-hub\.venv\Scripts\python.exe -m pip install -r projects-hub\requirement
 nexus-hub\.venv\Scripts\python.exe  -m pip install -r nexus-hub\requirements.txt
 ```
 
+> ⚡ **En Windows, `./setup.ps1` hace todo lo anterior** (venvs + deps + copia de skills +
+> `listener/config.json`) y además **genera el bloque `mcpServers` con tus rutas ya
+> resueltas**. Las plantillas para el despliegue están en [`templates/`](templates).
+
 Luego registra **ambos** servidores en tu cliente MCP. Ejemplo para Claude Code (`~/.claude.json` → `mcpServers`):
 
 ```json

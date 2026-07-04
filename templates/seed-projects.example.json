@@ -1,0 +1,43 @@
+{
+  "_comment": "PLANTILLA para poblar TU hub. Copia este archivo (ej. a seed-projects.json), reemplaza el ejemplo por tus proyectos reales y, en una sesión de tu cliente MCP, pídele a Claude: 'lee seed-projects.json y registra cada proyecto con register_project, y sus capacidades con declare_capability'. No busques completitud: con 2-3 capacidades por proyecto el ruteo ya funciona; el listener mantiene el mapa después. 'provides' = lo que el proyecto OFRECE a otros; 'consumes' = lo que NECESITA de otros (referencia una capacidad que otro provee por su 'name').",
+  "_categorias_sugeridas": ["api", "funcion", "tabla", "servicio", "evento", "cola"],
+  "projects": [
+    {
+      "name": "mi-api",
+      "path": "C:/repos/mi-api",
+      "description": "Backend de pagos — FastAPI",
+      "provides": [
+        {
+          "name": "cobro-tarjeta",
+          "category": "api",
+          "contract": "POST /charge {amount, token} -> {status, id}"
+        }
+      ],
+      "consumes": [
+        { "name": "notificar-cliente", "category": "api" }
+      ]
+    },
+    {
+      "name": "mi-front",
+      "path": "C:/repos/mi-front",
+      "description": "Frontend web — React/Vite",
+      "provides": [],
+      "consumes": [
+        { "name": "cobro-tarjeta", "category": "api" }
+      ]
+    },
+    {
+      "name": "mi-notificaciones",
+      "path": "C:/repos/mi-notificaciones",
+      "description": "Servicio de correos y push",
+      "provides": [
+        {
+          "name": "notificar-cliente",
+          "category": "api",
+          "contract": "POST /notify {to, template, data} -> {sent}"
+        }
+      ],
+      "consumes": []
+    }
+  ]
+}
