@@ -142,8 +142,13 @@ def db():
         summary TEXT DEFAULT '',
         status TEXT DEFAULT 'raw',
         created_at TEXT,
+        transcript_path TEXT DEFAULT '',
         UNIQUE(session_id)
     )""")
+    try:
+        conn.execute("ALTER TABLE observations ADD COLUMN transcript_path TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 

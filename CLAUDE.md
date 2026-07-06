@@ -90,10 +90,15 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   item_type='git-sync'; `--git-sync` fuerza ahora).
 - **Coordinación de ramas:** `create_coordinated_feature` + `update_branch_state`.
 - **Observaciones de sesión:** SessionEnd → `observer/session_observer.py` → fila `raw` en
-  `observations`. Se consultan con `list_observations` (nexus-hub) o SQL directo. Log del
-  hook en `~/.claude-projects-hub/observer.log`. Prueba manual:
+  `observations` (con `transcript_path`). En idle, el listener resume hasta
+  `observations_per_cycle` por ciclo con `claude -p` de **texto puro** (sin tools ni repo:
+  el diálogo extraído del transcript va en el prompt, con `<private>` filtrado también ahí)
+  → `summarized`; idempotencia vía `auto_runs` item_type='observation' (el observer libera
+  la corrida vieja si la sesión se retoma). `--summarize-observations` fuerza todas ahora.
+  Se consultan con `list_observations` (nexus-hub) o SQL directo. Log del hook en
+  `~/.claude-projects-hub/observer.log`. Prueba manual:
   `python observer/session_observer.py --transcript <jsonl> --cwd <raiz> --session-id x`;
-  tests: `python -m unittest observer.test_session_observer`.
+  tests: `python -m unittest observer.test_session_observer listener.test_observation_summary`.
 
 ## 4. Errores y soluciones
 
@@ -118,10 +123,9 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 
 - **Registrar el hook SessionEnd** en `~/.claude/settings.json` (paso manual del usuario;
   el asistente no puede auto-instalar hooks). Bloque exacto en `observer/README.md`.
-- **Memoria pasiva, fases siguientes:** fase 2 (resumen en idle por el listener,
-  `raw`→`summarized` vía `auto_runs` item_type='observation'), fase 3 (`nexus_search`
-  progresivo con refs + `nexus_get` + `nexus_timeline`, incluir `observations`), fase 4
-  opcional (inyección de contexto en SessionStart, medir tokens antes).
+- **Memoria pasiva, fases siguientes:** fase 3 (`nexus_search` progresivo con refs +
+  `nexus_get` + `nexus_timeline`, incluir `observations`), fase 4 opcional (inyección de
+  contexto en SessionStart, medir tokens antes).
 - **Reiniciar Claude** tras desplegar para exponer las tools nuevas (`nexus_boot`,
   `nexus_overview`, `nexus_search`, `save_knowledge`, `get_knowledge`, `list_observations`)
   a las sesiones.

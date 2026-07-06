@@ -109,8 +109,15 @@ def db(path=None):
         summary TEXT DEFAULT '',
         status TEXT DEFAULT 'raw',
         created_at TEXT,
+        transcript_path TEXT DEFAULT '',
         UNIQUE(session_id)
     )""")
+    # ALTER defensivo para DBs creadas antes de la fase 2 (el listener resume leyendo
+    # el transcript, asi que la ruta se persiste).
+    try:
+        conn.execute("ALTER TABLE observations ADD COLUMN transcript_path TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     return conn
 
@@ -266,15 +273,28 @@ def upsert_observation(conn, obs):
     conn.execute("""
         INSERT INTO observations
             (project, session_id, cwd, branch, first_prompt, files_touched,
-             stats, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'raw', ?)
+             stats, status, created_at, transcript_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'raw', ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             project=excluded.project, cwd=excluded.cwd, branch=excluded.branch,
             first_prompt=excluded.first_prompt, files_touched=excluded.files_touched,
-            stats=excluded.stats, status='raw', created_at=excluded.created_at
+            stats=excluded.stats, status='raw', created_at=excluded.created_at,
+            transcript_path=excluded.transcript_path
     """, (obs["project"], obs["session_id"], obs["cwd"], obs["branch"],
           obs["first_prompt"], json.dumps(obs["files"], ensure_ascii=False),
-          json.dumps(obs["stats"], ensure_ascii=False), now_iso()))
+          json.dumps(obs["stats"], ensure_ascii=False), now_iso(),
+          obs.get("transcript_path", "")))
+    # Si la sesion ya habia sido resumida (auto_runs 'done'), esa corrida vieja
+    # bloquearia el re-resumen por idempotencia: se libera. auto_runs es tabla de
+    # nexus-hub (escritura permitida); puede no existir aun en hubs recien creados.
+    try:
+        row = conn.execute("SELECT id FROM observations WHERE session_id=?",
+                           (obs["session_id"],)).fetchone()
+        if row:
+            conn.execute("DELETE FROM auto_runs WHERE item_type='observation' AND item_id=?",
+                         (row["id"],))
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
 
 
@@ -328,6 +348,7 @@ def process(payload, cfg, conn):
         "branch": parsed["branch"] or git_branch(cwd),
         "first_prompt": parsed["first_prompt"],
         "files": parsed["files"], "stats": parsed["stats"],
+        "transcript_path": str(transcript),
     }
     upsert_observation(conn, obs)
     prune(conn, cfg)
