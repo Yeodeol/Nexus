@@ -19,8 +19,13 @@ Pedido del usuario (puede venir en `$ARGUMENTS` o en su mensaje): $ARGUMENTS
 Orden de fuentes, de la mas barata a la mas cara — **no saltes niveles**:
 
 1. **Busca en el hub**: `nexus_search("<terminos>")` — busca en capacidades, fichas,
-   checkpoints, estado, handoffs y mensajes de TODOS los proyectos a la vez. Muchas
+   checkpoints, estado, handoffs, mensajes y observaciones de sesion de TODOS los
+   proyectos a la vez. Devuelve un **indice compacto con refs** (`knowledge#12`,
+   `handoff#3`, ...): revisa los snippets y trae el contenido completo SOLO de los que
+   interesen con `nexus_get(refs="ref1, ref2")`. Filtros: `project=`, `since=`. Muchas
    preguntas mueren aca.
+   - Para "¿que ha pasado con X?": `nexus_timeline(project, days)` — cronologia unificada
+     (sesiones, checkpoints, handoffs, mensajes, corridas del listener) con refs.
 2. **Ficha de conocimiento**: si identificaste el proyecto, `get_knowledge(proyecto)` para
    listar topics y `get_knowledge(proyecto, topic)` para el detalle (endpoints, datos,
    flujos). Son la memoria profunda: contratos y rutas de archivo reales.

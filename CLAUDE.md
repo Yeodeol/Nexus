@@ -33,6 +33,12 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   `nexus_overview` (visión global) y `nexus_search` (búsqueda global) + skill `/nexus`.
   Para la búsqueda se descartó FTS5 (triggers de sincronización) por LIKE tokenizado en
   Python: el hub tiene cientos de filas, no miles.
+- **Búsqueda con revelación progresiva (patrón de claude-mem):** `nexus_search` devuelve un
+  **índice compacto** de hits con `ref` (`knowledge#12`, `handoff#3`, `state#proy/key`) y
+  snippet de ~80 chars + filtros `project=`/`since=`; el contenido completo se trae solo de
+  los refs que interesan con `nexus_get(refs)`. `nexus_timeline(project, days)` da la
+  cronología unificada (sesiones, checkpoints, handoffs, mensajes, interacciones,
+  auto_runs). Las observaciones de sesión entran en ambas.
 - **Fichas de conocimiento** (tabla `knowledge`, UNIQUE project+topic): memoria profunda por
   proyecto; las refresca el listener en idle con un agente cuyas únicas escrituras permitidas
   son `save_knowledge` y `declare_capability` (mantiene también el mapa de capacidades).
@@ -123,12 +129,13 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 
 - **Registrar el hook SessionEnd** en `~/.claude/settings.json` (paso manual del usuario;
   el asistente no puede auto-instalar hooks). Bloque exacto en `observer/README.md`.
-- **Memoria pasiva, fases siguientes:** fase 3 (`nexus_search` progresivo con refs +
-  `nexus_get` + `nexus_timeline`, incluir `observations`), fase 4 opcional (inyección de
-  contexto en SessionStart, medir tokens antes).
+- **Memoria pasiva, fase siguiente:** fase 4 opcional (inyección de contexto en
+  SessionStart vía `additionalContext`, medir tokens antes de activarla).
 - **Reiniciar Claude** tras desplegar para exponer las tools nuevas (`nexus_boot`,
-  `nexus_overview`, `nexus_search`, `save_knowledge`, `get_knowledge`, `list_observations`)
-  a las sesiones.
+  `nexus_overview`, `nexus_search` con refs, `nexus_get`, `nexus_timeline`,
+  `save_knowledge`, `get_knowledge`, `list_observations`) a las sesiones. Tests de las
+  tools: correr `test_nexus_tools.py` con un python que tenga `mcp`
+  (`~/mcp-servers/nexus-hub/.venv/Scripts/python.exe`).
 - **Poblar fichas iniciales:** correr `python listener/nexus_listener.py --once --refresh-knowledge`
   (o dejar el daemon en idle) para generar las primeras fichas de los responders.
 - **Triage humano** de los ~13 handoffs `pending` acumulados (visibles en `nexus_overview`).
