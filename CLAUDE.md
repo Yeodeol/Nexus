@@ -63,7 +63,11 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   a sus agentes), `<private>...</private>` nunca se persiste, opt-in en
   `observer/config.json` (gitignored; vacío = todos los proyectos registrados), prune de
   `raw` a los `retention_days` (las `summarized` se conservan). UPSERT por `session_id`:
-  una sesión retomada actualiza su fila y vuelve a `raw` para re-resumen.
+  una sesión retomada actualiza su fila y vuelve a `raw` para re-resumen. La contraparte
+  `session_context.py` (hook SessionStart) **inyecta** al arrancar un bloque compacto
+  (`inject_max_chars`, default 1200 chars ≈ 300 tokens; en la práctica ~400) con últimas
+  sesiones + handoffs pendientes + buzón: `nexus_boot` automático, apagable con
+  `inject_context: false`.
 - **Maquetas de despliegue (onboarding de un clon nuevo):** el repo entrega la plataforma, no
   los datos (el `hub.db` es local y gitignored). Para que un tercero despliegue **su propio
   Nexus** se agregó `setup.ps1` (bootstrap idempotente Windows) + `templates/` genéricos
@@ -127,10 +131,9 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 
 ## 6. Pendientes
 
-- **Registrar el hook SessionEnd** en `~/.claude/settings.json` (paso manual del usuario;
-  el asistente no puede auto-instalar hooks). Bloque exacto en `observer/README.md`.
-- **Memoria pasiva, fase siguiente:** fase 4 opcional (inyección de contexto en
-  SessionStart vía `additionalContext`, medir tokens antes de activarla).
+- **Registrar los hooks** (SessionEnd = captura; SessionStart = inyección, opcional) en
+  `~/.claude/settings.json` (paso manual del usuario; el asistente no puede auto-instalar
+  hooks). Bloque exacto en `observer/README.md`.
 - **Reiniciar Claude** tras desplegar para exponer las tools nuevas (`nexus_boot`,
   `nexus_overview`, `nexus_search` con refs, `nexus_get`, `nexus_timeline`,
   `save_knowledge`, `get_knowledge`, `list_observations`) a las sesiones. Tests de las

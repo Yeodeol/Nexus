@@ -145,13 +145,16 @@ Write-Dim "3) Reinicia tu cliente MCP para que cargue ambos servidores."
 Write-Dim "4) Registra TUS proyectos: copia templates/seed-projects.example.json, editalo"
 Write-Dim "   con los tuyos y pidele a Claude que lo lea y ejecute register_project +"
 Write-Dim "   declare_capability por cada proyecto."
-Write-Dim "5) (Opcional, memoria pasiva) Registra el hook SessionEnd en ~/.claude/settings.json"
-Write-Dim "   para capturar observaciones de cada sesion (ver observer/README.md):"
+Write-Dim "5) (Opcional, memoria pasiva) Registra los hooks en ~/.claude/settings.json:"
+Write-Dim "   SessionEnd captura observaciones de cada sesion; SessionStart inyecta la"
+Write-Dim "   memoria del hub al arrancar (ver observer/README.md):"
 Write-Host ""
 Write-Host @"
   "hooks": {
     "SessionEnd": [{"hooks": [{"type": "command",
-      "command": "python \"$rootFwd/observer/session_observer.py\""}]}]
+      "command": "python \"$rootFwd/observer/session_observer.py\""}]}],
+    "SessionStart": [{"hooks": [{"type": "command",
+      "command": "python \"$rootFwd/observer/session_context.py\""}]}]
   }
 "@ -ForegroundColor White
 Write-Host ""

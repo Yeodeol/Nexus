@@ -3,5 +3,8 @@
   "projects": [],
   "max_files": 40,
   "first_prompt_max_chars": 400,
-  "retention_days": 90
+  "retention_days": 90,
+  "inject_context": true,
+  "inject_max_chars": 1200,
+  "inject_observations": 3
 }
