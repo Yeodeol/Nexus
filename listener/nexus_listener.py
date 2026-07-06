@@ -45,6 +45,10 @@ RUNS_DIR = Path.home() / ".claude-projects-hub" / "listener-runs"
 # claude) abriria una ventana de consola visible que aparece y se cierra.
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+# Env de los agentes headless: NEXUS_LISTENER=1 hace que el hook SessionEnd
+# (observer/session_observer.py) NO registre estas corridas como sesiones humanas.
+AGENT_ENV = {**os.environ, "NEXUS_LISTENER": "1"}
+
 # Cada cuanto revisar en idle si hay fichas por refrescar (evita correr git rev-parse
 # por proyecto en cada poll de 15s; el sondeo de items sigue siendo cada poll_interval).
 KNOWLEDGE_CHECK_SECONDS = 600
@@ -361,7 +365,7 @@ def run_agent(claude_bin, cwd, model, timeout, item):
     try:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout,
-                              creationflags=CREATE_NO_WINDOW)
+                              creationflags=CREATE_NO_WINDOW, env=AGENT_ENV)
     except subprocess.TimeoutExpired as exc:
         logf = save_run_log(tag, cmd, "timeout", exc.stdout, exc.stderr)
         return "error", f"timeout tras {timeout}s (log: {logf})"
@@ -504,7 +508,7 @@ def refresh_knowledge(cfg, claude_bin, project):
             proc = subprocess.run(cmd, cwd=path, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace",
                                   timeout=cfg.get("knowledge_timeout", 600),
-                                  creationflags=CREATE_NO_WINDOW)
+                                  creationflags=CREATE_NO_WINDOW, env=AGENT_ENV)
             rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
             rc, stdout, stderr = "timeout", exc.stdout, exc.stderr

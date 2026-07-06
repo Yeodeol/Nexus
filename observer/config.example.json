@@ -1,0 +1,7 @@
+{
+  "_comment": "Copia este archivo a config.json (gitignored). 'projects' VACIO = captura observaciones de TODOS los proyectos registrados en el hub; con nombres, solo esos. La captura es local (hub.db), deterministica y sin costo de modelo.",
+  "projects": [],
+  "max_files": 40,
+  "first_prompt_max_chars": 400,
+  "retention_days": 90
+}

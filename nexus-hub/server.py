@@ -127,6 +127,23 @@ def db():
         conn.execute("ALTER TABLE knowledge ADD COLUMN git_commit TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    # Observaciones de sesion: memoria PASIVA. Las escribe el hook SessionEnd
+    # (observer/session_observer.py) con datos deterministicos del transcript; el
+    # listener las resume en idle (status raw -> summarized).
+    conn.execute("""CREATE TABLE IF NOT EXISTS observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        cwd TEXT,
+        branch TEXT,
+        first_prompt TEXT,
+        files_touched TEXT,
+        stats TEXT,
+        summary TEXT DEFAULT '',
+        status TEXT DEFAULT 'raw',
+        created_at TEXT,
+        UNIQUE(session_id)
+    )""")
     return conn
 
 
@@ -813,6 +830,44 @@ def get_knowledge(project: str, topic: str = "") -> str:
         return (f"'{project}' no tiene fichas de conocimiento aun. Se generan con el listener "
                 f"(refresh en idle) o a mano con save_knowledge.")
     return json.dumps([dict(r) for r in rows], indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def list_observations(project: str = "", status: str = "", limit: int = 20) -> str:
+    """Lista las OBSERVACIONES de sesion (memoria pasiva): que sesiones de Claude Code
+    hubo en cada proyecto, que archivos tocaron, en que rama y de que se trataban.
+    Las captura automaticamente el hook SessionEnd (observer/) y el listener las resume
+    en idle. Filtros opcionales: project, status ('raw' = sin resumir | 'summarized')."""
+    q = ("SELECT id, project, session_id, branch, first_prompt, files_touched, stats, "
+         "summary, status, created_at FROM observations")
+    conds, params = [], []
+    if project:
+        conds.append("project=?")
+        params.append(project)
+    if status:
+        conds.append("status=?")
+        params.append(status)
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, limit))
+    with db() as conn:
+        rows = conn.execute(q, params).fetchall()
+    if not rows:
+        scope = f" de '{project}'" if project else ""
+        return (f"No hay observaciones{scope} aun. Se generan solas al terminar sesiones "
+                f"de Claude Code (hook SessionEnd; ver observer/README.md).")
+    out = []
+    for r in rows:
+        d = dict(r)
+        # files_touched/stats vienen como JSON serializado: se expanden para leerlos directo.
+        for key in ("files_touched", "stats"):
+            try:
+                d[key] = json.loads(d[key]) if d[key] else None
+            except (TypeError, ValueError):
+                pass
+        out.append(d)
+    return json.dumps(out, indent=2, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------

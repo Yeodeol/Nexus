@@ -98,6 +98,17 @@ if (-not (Test-Path $cfg)) {
   Write-Dim "listener/config.json ya existe (no se toca)"
 }
 
+# --- 4b. Config del observer (memoria pasiva de sesiones) -------------------
+Write-Step "Configuracion del observer"
+$obsCfg        = Join-Path $root 'observer\config.json'
+$obsCfgExample = Join-Path $root 'observer\config.example.json'
+if (-not (Test-Path $obsCfg)) {
+  Copy-Item $obsCfgExample $obsCfg
+  Write-Ok "observer/config.json creado desde el ejemplo (vacio = captura todos los proyectos del hub)"
+} else {
+  Write-Dim "observer/config.json ya existe (no se toca)"
+}
+
 # --- 5. Bloque mcpServers con rutas resueltas ------------------------------
 Write-Step "Generando bloque mcpServers (rutas absolutas de este clon)"
 $rootFwd = $root -replace '\\', '/'
@@ -122,7 +133,7 @@ $mcpJson | Out-File -FilePath $genPath -Encoding utf8
 Write-Ok "escrito en mcp-servers.generated.json (gitignored)"
 
 # --- Resumen / proximos pasos ----------------------------------------------
-Write-Step "Listo. Faltan 4 pasos manuales (una sola vez):"
+Write-Step "Listo. Faltan 5 pasos manuales (una sola vez):"
 Write-Dim "1) Registra los servidores MCP: fusiona la clave 'mcpServers' de abajo en tu"
 Write-Dim "   ~/.claude.json (o el config de tu cliente MCP). Ya viene con tus rutas:"
 Write-Host ""
@@ -134,6 +145,15 @@ Write-Dim "3) Reinicia tu cliente MCP para que cargue ambos servidores."
 Write-Dim "4) Registra TUS proyectos: copia templates/seed-projects.example.json, editalo"
 Write-Dim "   con los tuyos y pidele a Claude que lo lea y ejecute register_project +"
 Write-Dim "   declare_capability por cada proyecto."
+Write-Dim "5) (Opcional, memoria pasiva) Registra el hook SessionEnd en ~/.claude/settings.json"
+Write-Dim "   para capturar observaciones de cada sesion (ver observer/README.md):"
+Write-Host ""
+Write-Host @"
+  "hooks": {
+    "SessionEnd": [{"hooks": [{"type": "command",
+      "command": "python \"$rootFwd/observer/session_observer.py\""}]}]
+  }
+"@ -ForegroundColor White
 Write-Host ""
 Write-Dim "Opcional (auto-respuestas + fichas): python listener/nexus_listener.py"
 Write-Dim "Detalle completo en docs/GETTING_STARTED.md"

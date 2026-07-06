@@ -18,6 +18,9 @@ __pycache__/
 # Config local del listener (opt-in de proyectos reales; no versionar)
 listener/config.json
 
+# Config local del observer (opt-in de proyectos reales; no versionar)
+observer/config.json
+
 # Generado por setup.ps1: bloque mcpServers con rutas absolutas locales
 mcp-servers.generated.json
 
