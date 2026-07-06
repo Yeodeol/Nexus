@@ -12,5 +12,9 @@
   "knowledge_projects": [],
   "knowledge_timeout": 600,
   "git_sync_projects": [],
-  "git_sync_hours": 24
+  "git_sync_hours": 24,
+  "observation_projects": [],
+  "observation_timeout": 120,
+  "observations_per_cycle": 2,
+  "observation_dialogue_chars": 12000
 }

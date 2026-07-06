@@ -11,7 +11,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from mcp.server.fastmcp import FastMCP
 
 HUB_DIR = Path.home() / ".claude-projects-hub"
@@ -125,6 +125,28 @@ def db():
     # el listener refresca por CAMBIO de commit, no por edad).
     try:
         conn.execute("ALTER TABLE knowledge ADD COLUMN git_commit TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # Observaciones de sesion: memoria PASIVA. Las escribe el hook SessionEnd
+    # (observer/session_observer.py) con datos deterministicos del transcript; el
+    # listener las resume en idle (status raw -> summarized).
+    conn.execute("""CREATE TABLE IF NOT EXISTS observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        cwd TEXT,
+        branch TEXT,
+        first_prompt TEXT,
+        files_touched TEXT,
+        stats TEXT,
+        summary TEXT DEFAULT '',
+        status TEXT DEFAULT 'raw',
+        created_at TEXT,
+        transcript_path TEXT DEFAULT '',
+        UNIQUE(session_id)
+    )""")
+    try:
+        conn.execute("ALTER TABLE observations ADD COLUMN transcript_path TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
     return conn
@@ -333,11 +355,15 @@ def nexus_overview() -> str:
 
 
 @mcp.tool()
-def nexus_search(query: str, limit: int = 30) -> str:
-    """Busqueda GLOBAL en toda la memoria del hub en una llamada: capacidades, fichas de
-    conocimiento, checkpoints, estado, handoffs, mensajes y proyectos. Tokeniza la consulta
-    (espacios, '_', '-') y exige que CADA token aparezca en el registro. Devuelve hits con
-    fuente, proyecto y snippet. Uso tipico: '¿donde esta X?' sin saber en que proyecto."""
+def nexus_search(query: str, limit: int = 30, project: str = "", since: str = "") -> str:
+    """Busqueda GLOBAL en toda la memoria del hub: capacidades, fichas, checkpoints,
+    estado, handoffs, mensajes, observaciones de sesion y proyectos. Tokeniza la consulta
+    (espacios, '_', '-') y exige que CADA token aparezca en el registro.
+
+    REVELACION PROGRESIVA (barato primero): devuelve un INDICE compacto de hits con una
+    referencia `ref` (ej 'knowledge#12', 'handoff#3', 'state#proy/rama') y un snippet
+    corto. Para el contenido completo de los que interesen, llama nexus_get(refs='...').
+    Filtros opcionales: project (solo ese proyecto) y since (fecha ISO minima)."""
     tokens = [t for t in re.split(r"[\s_\-]+", (query or "").lower().strip()) if t]
     if not tokens:
         return "La consulta esta vacia."
@@ -346,51 +372,207 @@ def nexus_search(query: str, limit: int = 30) -> str:
         hay = " ".join(f or "" for f in fields).lower()
         return all(t in hay for t in tokens)
 
+    def keep(proj_fields, fecha):
+        if project and project not in [p for p in proj_fields if p]:
+            return False
+        if since and (fecha or "") < since:
+            return False
+        return True
+
     hits = []
     with db() as conn:
         for r in conn.execute("SELECT name, description FROM projects"):
-            if match(r["name"], r["description"]):
-                hits.append({"fuente": "project", "project": r["name"],
-                             "snippet": _snippet(r["description"], tokens), "fecha": ""})
+            if match(r["name"], r["description"]) and keep([r["name"]], ""):
+                hits.append({"ref": f"project#{r['name']}", "project": r["name"],
+                             "snippet": _snippet(r["description"], tokens, 80), "fecha": ""})
         for r in conn.execute(
-                "SELECT project, kind, name, category, contract, notes, updated_at FROM capabilities"):
-            if match(r["name"], r["category"], r["contract"], r["notes"]):
-                hits.append({"fuente": f"capability/{r['kind']}", "project": r["project"],
-                             "snippet": f"{r['name']} [{r['category'] or '-'}] " +
-                                        _snippet(r["contract"] or r["notes"], tokens, 140),
+                "SELECT id, project, kind, name, category, contract, notes, updated_at FROM capabilities"):
+            if match(r["name"], r["category"], r["contract"], r["notes"]) \
+                    and keep([r["project"]], r["updated_at"]):
+                hits.append({"ref": f"capability#{r['id']}", "project": r["project"],
+                             "snippet": f"[{r['kind']}] {r['name']} " +
+                                        _snippet(r["contract"] or r["notes"], tokens, 60),
                              "fecha": r["updated_at"] or ""})
-        for r in conn.execute("SELECT project, topic, content, updated_at FROM knowledge"):
-            if match(r["topic"], r["content"]):
-                hits.append({"fuente": f"knowledge/{r['topic']}", "project": r["project"],
-                             "snippet": _snippet(r["content"], tokens), "fecha": r["updated_at"] or ""})
-        for r in conn.execute("SELECT project, summary, created_at FROM checkpoints"):
-            if match(r["summary"]):
-                hits.append({"fuente": "checkpoint", "project": r["project"],
-                             "snippet": _snippet(r["summary"], tokens), "fecha": r["created_at"] or ""})
+        for r in conn.execute("SELECT id, project, topic, content, updated_at FROM knowledge"):
+            if match(r["topic"], r["content"]) and keep([r["project"]], r["updated_at"]):
+                hits.append({"ref": f"knowledge#{r['id']}", "project": r["project"],
+                             "snippet": f"[{r['topic']}] " + _snippet(r["content"], tokens, 80),
+                             "fecha": r["updated_at"] or ""})
+        for r in conn.execute("SELECT id, project, summary, created_at FROM checkpoints"):
+            if match(r["summary"]) and keep([r["project"]], r["created_at"]):
+                hits.append({"ref": f"checkpoint#{r['id']}", "project": r["project"],
+                             "snippet": _snippet(r["summary"], tokens, 80),
+                             "fecha": r["created_at"] or ""})
         for r in conn.execute("SELECT project, key, value, updated_at FROM state"):
-            if match(r["key"], r["value"]):
-                hits.append({"fuente": f"state/{r['key']}", "project": r["project"],
-                             "snippet": _snippet(r["value"], tokens), "fecha": r["updated_at"] or ""})
+            if match(r["key"], r["value"]) and keep([r["project"]], r["updated_at"]):
+                hits.append({"ref": f"state#{r['project']}/{r['key']}", "project": r["project"],
+                             "snippet": _snippet(r["value"], tokens, 80),
+                             "fecha": r["updated_at"] or ""})
         for r in conn.execute(
                 "SELECT id, from_project, to_project, stage, payload, status, created_at FROM handoffs"):
-            if match(r["stage"], r["payload"]):
-                hits.append({"fuente": f"handoff#{r['id']}/{r['status']}",
+            if match(r["stage"], r["payload"]) \
+                    and keep([r["from_project"], r["to_project"]], r["created_at"]):
+                hits.append({"ref": f"handoff#{r['id']}",
                              "project": f"{r['from_project']}->{r['to_project']}",
-                             "snippet": _snippet(r["payload"], tokens), "fecha": r["created_at"] or ""})
+                             "snippet": f"[{r['status']}] " + _snippet(r["payload"], tokens, 80),
+                             "fecha": r["created_at"] or ""})
         for r in conn.execute(
                 "SELECT id, from_project, to_project, text, kind, created_at FROM messages"):
-            if match(r["text"]):
-                hits.append({"fuente": f"message/{r['kind']}",
+            if match(r["text"]) and keep([r["from_project"], r["to_project"]], r["created_at"]):
+                hits.append({"ref": f"message#{r['id']}",
                              "project": f"{r['from_project'] or '?'}->{r['to_project']}",
-                             "snippet": _snippet(r["text"], tokens), "fecha": r["created_at"] or ""})
+                             "snippet": f"[{r['kind']}] " + _snippet(r["text"], tokens, 80),
+                             "fecha": r["created_at"] or ""})
+        for r in conn.execute(
+                "SELECT id, project, branch, first_prompt, files_touched, summary, created_at "
+                "FROM observations"):
+            if match(r["first_prompt"], r["summary"], r["files_touched"], r["branch"]) \
+                    and keep([r["project"]], r["created_at"]):
+                hits.append({"ref": f"observation#{r['id']}", "project": r["project"],
+                             "snippet": _snippet(r["summary"] or r["first_prompt"], tokens, 80),
+                             "fecha": r["created_at"] or ""})
     if not hits:
         return f"Sin resultados para '{query}' en el hub."
     hits.sort(key=lambda h: h["fecha"], reverse=True)
     total = len(hits)
     hits = hits[:max(1, limit)]
-    out = {"query": query, "total": total, "hits": hits}
+    out = {"query": query, "total": total, "hits": hits,
+           "uso": "detalle completo: nexus_get(refs='ref1, ref2, ...')"}
     if total > len(hits):
         out["nota"] = f"Mostrando {len(hits)} de {total}; sube 'limit' o afina la consulta."
+    return json.dumps(out, indent=2, ensure_ascii=False)
+
+
+# Fuentes resolubles por nexus_get: ref 'tabla#id' -> query del registro completo.
+_GET_BY_ID = {
+    "capability": "SELECT * FROM capabilities WHERE id=?",
+    "knowledge": "SELECT * FROM knowledge WHERE id=?",
+    "checkpoint": "SELECT * FROM checkpoints WHERE id=?",
+    "handoff": "SELECT * FROM handoffs WHERE id=?",
+    "message": "SELECT * FROM messages WHERE id=?",
+    "observation": "SELECT * FROM observations WHERE id=?",
+}
+
+
+@mcp.tool()
+def nexus_get(refs: str) -> str:
+    """Trae el CONTENIDO COMPLETO de referencias devueltas por nexus_search (capa 2 de la
+    revelacion progresiva). refs = lista separada por comas o espacios, ej:
+    'knowledge#12, handoff#3, state#miproyecto/rama, project#miproyecto'.
+    Asi el indice barato de nexus_search no arrastra registros completos que no se usan."""
+    parts = [p for p in re.split(r"[,\s]+", (refs or "").strip()) if p]
+    if not parts:
+        return "refs vacio: pasa referencias tipo 'knowledge#12, handoff#3'."
+    out = []
+    with db() as conn:
+        for ref in parts:
+            source, _, rest = ref.partition("#")
+            source = source.lower().strip()
+            if not rest:
+                out.append({"ref": ref, "error": "formato invalido (se espera fuente#id)"})
+                continue
+            if source == "project":
+                row = conn.execute(
+                    "SELECT * FROM projects WHERE name=?", (rest,)).fetchone()
+            elif source == "state":
+                proj, _, key = rest.partition("/")
+                row = conn.execute(
+                    "SELECT * FROM state WHERE project=? AND key=?", (proj, key)).fetchone()
+            elif source in _GET_BY_ID:
+                try:
+                    row = conn.execute(_GET_BY_ID[source], (int(rest),)).fetchone()
+                except ValueError:
+                    row = None
+            else:
+                out.append({"ref": ref, "error": f"fuente desconocida '{source}'"})
+                continue
+            if not row:
+                out.append({"ref": ref, "error": "no existe (o fue borrado)"})
+                continue
+            d = dict(row)
+            if source == "observation":
+                for key in ("files_touched", "stats"):
+                    try:
+                        d[key] = json.loads(d[key]) if d.get(key) else None
+                    except (TypeError, ValueError):
+                        pass
+            out.append({"ref": ref, "data": d})
+    return json.dumps(out, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def nexus_timeline(project: str = "", days: int = 7, limit: int = 40) -> str:
+    """CRONOLOGIA unificada del hub: que ha pasado (checkpoints, observaciones de sesion,
+    handoffs, mensajes, interacciones y corridas del listener) en los ultimos `days` dias,
+    ordenado del mas reciente al mas antiguo. Con project filtra a ese proyecto (en
+    handoffs/mensajes/interacciones matchea origen O destino). Responde '¿que ha pasado
+    con X esta semana?' en una llamada. Cada evento trae su ref para nexus_get."""
+    cutoff = (datetime.now() - timedelta(days=max(1, days))).isoformat()
+    events = []
+
+    def keep(*projs):
+        return not project or project in [p for p in projs if p]
+
+    def clip(text, width=110):
+        t = (text or "").replace("\n", " ").strip()
+        return t[:width] + ("..." if len(t) > width else "")
+
+    with db() as conn:
+        for r in conn.execute(
+                "SELECT id, project, summary, created_at FROM checkpoints WHERE created_at > ?",
+                (cutoff,)):
+            if keep(r["project"]):
+                events.append({"fecha": r["created_at"], "tipo": "checkpoint",
+                               "project": r["project"], "ref": f"checkpoint#{r['id']}",
+                               "detalle": clip(r["summary"])})
+        for r in conn.execute(
+                "SELECT id, project, branch, first_prompt, summary, status, created_at "
+                "FROM observations WHERE created_at > ?", (cutoff,)):
+            if keep(r["project"]):
+                events.append({"fecha": r["created_at"], "tipo": "sesion",
+                               "project": r["project"], "ref": f"observation#{r['id']}",
+                               "detalle": f"[{r['branch'] or '?'}] "
+                                          + clip(r["summary"] or r["first_prompt"])})
+        for r in conn.execute(
+                "SELECT id, from_project, to_project, stage, payload, status, created_at "
+                "FROM handoffs WHERE created_at > ?", (cutoff,)):
+            if keep(r["from_project"], r["to_project"]):
+                events.append({"fecha": r["created_at"], "tipo": f"handoff/{r['status']}",
+                               "project": f"{r['from_project']}->{r['to_project']}",
+                               "ref": f"handoff#{r['id']}",
+                               "detalle": f"[{r['stage'] or '-'}] " + clip(r["payload"])})
+        for r in conn.execute(
+                "SELECT id, from_project, to_project, text, kind, created_at "
+                "FROM messages WHERE created_at > ?", (cutoff,)):
+            if keep(r["from_project"], r["to_project"]):
+                events.append({"fecha": r["created_at"], "tipo": f"message/{r['kind']}",
+                               "project": f"{r['from_project'] or '?'}->{r['to_project']}",
+                               "ref": f"message#{r['id']}", "detalle": clip(r["text"])})
+        for r in conn.execute(
+                "SELECT from_project, to_project, intent, outcome, created_at "
+                "FROM interactions WHERE created_at > ?", (cutoff,)):
+            if keep(r["from_project"], r["to_project"]):
+                events.append({"fecha": r["created_at"], "tipo": "interaccion",
+                               "project": f"{r['from_project']}->{r['to_project']}",
+                               "detalle": clip(f"{r['intent'] or ''} -> {r['outcome'] or ''}")})
+        for r in conn.execute(
+                "SELECT item_type, item_id, project, status, result, created_at, finished_at "
+                "FROM auto_runs WHERE created_at > ?", (cutoff,)):
+            if keep(r["project"]):
+                events.append({"fecha": r["finished_at"] or r["created_at"],
+                               "tipo": f"auto/{r['item_type']}/{r['status']}",
+                               "project": r["project"], "detalle": clip(r["result"])})
+    if not events:
+        scope = f" para '{project}'" if project else ""
+        return f"Sin eventos en los ultimos {days} dias{scope}."
+    events.sort(key=lambda e: e["fecha"] or "", reverse=True)
+    total = len(events)
+    events = events[:max(1, limit)]
+    out = {"days": days, "total": total, "eventos": events}
+    if project:
+        out["project"] = project
+    if total > len(events):
+        out["nota"] = f"Mostrando {len(events)} de {total}; sube 'limit' o baja 'days'."
     return json.dumps(out, indent=2, ensure_ascii=False)
 
 
@@ -813,6 +995,44 @@ def get_knowledge(project: str, topic: str = "") -> str:
         return (f"'{project}' no tiene fichas de conocimiento aun. Se generan con el listener "
                 f"(refresh en idle) o a mano con save_knowledge.")
     return json.dumps([dict(r) for r in rows], indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def list_observations(project: str = "", status: str = "", limit: int = 20) -> str:
+    """Lista las OBSERVACIONES de sesion (memoria pasiva): que sesiones de Claude Code
+    hubo en cada proyecto, que archivos tocaron, en que rama y de que se trataban.
+    Las captura automaticamente el hook SessionEnd (observer/) y el listener las resume
+    en idle. Filtros opcionales: project, status ('raw' = sin resumir | 'summarized')."""
+    q = ("SELECT id, project, session_id, branch, first_prompt, files_touched, stats, "
+         "summary, status, created_at FROM observations")
+    conds, params = [], []
+    if project:
+        conds.append("project=?")
+        params.append(project)
+    if status:
+        conds.append("status=?")
+        params.append(status)
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY created_at DESC LIMIT ?"
+    params.append(max(1, limit))
+    with db() as conn:
+        rows = conn.execute(q, params).fetchall()
+    if not rows:
+        scope = f" de '{project}'" if project else ""
+        return (f"No hay observaciones{scope} aun. Se generan solas al terminar sesiones "
+                f"de Claude Code (hook SessionEnd; ver observer/README.md).")
+    out = []
+    for r in rows:
+        d = dict(r)
+        # files_touched/stats vienen como JSON serializado: se expanden para leerlos directo.
+        for key in ("files_touched", "stats"):
+            try:
+                d[key] = json.loads(d[key]) if d[key] else None
+            except (TypeError, ValueError):
+                pass
+        out.append(d)
+    return json.dumps(out, indent=2, ensure_ascii=False)
 
 
 # --------------------------------------------------------------------------

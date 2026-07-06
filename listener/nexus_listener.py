@@ -28,6 +28,7 @@ Sin dependencias externas (biblioteca estandar).
 import argparse
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -44,6 +45,10 @@ RUNS_DIR = Path.home() / ".claude-projects-hub" / "listener-runs"
 # El daemon corre con pythonw (sin consola): sin este flag, CADA subproceso (git,
 # claude) abriria una ventana de consola visible que aparece y se cierra.
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+# Env de los agentes headless: NEXUS_LISTENER=1 hace que el hook SessionEnd
+# (observer/session_observer.py) NO registre estas corridas como sesiones humanas.
+AGENT_ENV = {**os.environ, "NEXUS_LISTENER": "1"}
 
 # Cada cuanto revisar en idle si hay fichas por refrescar (evita correr git rev-parse
 # por proyecto en cada poll de 15s; el sondeo de items sigue siendo cada poll_interval).
@@ -63,6 +68,10 @@ DEFAULTS = {
     "knowledge_timeout": 600,  # timeout del agente de fichas (explora mas que un Q&A)
     "git_sync_projects": [],   # repos que se actualizan solos (fetch + pull --ff-only con guardas)
     "git_sync_hours": 24,      # cada cuantas horas corre el sync (0 = desactivado)
+    "observation_projects": [],     # proyectos cuyas observaciones se resumen (vacio = TODAS)
+    "observation_timeout": 120,     # timeout del resumen (tarea de texto puro, sin tools)
+    "observations_per_cycle": 2,    # max resumenes por ciclo idle (no monopolizar el idle)
+    "observation_dialogue_chars": 12000,  # cuanto dialogo del transcript se le pasa al modelo
 }
 
 # Allowlist ESTRECHA de tools del agente: solo lectura + tools del hub necesarias para
@@ -163,6 +172,26 @@ def db():
         pass
     try:
         conn.execute("ALTER TABLE knowledge ADD COLUMN git_commit TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # Observaciones de sesion (las escribe el hook observer/; aca solo se resumen).
+    conn.execute("""CREATE TABLE IF NOT EXISTS observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        cwd TEXT,
+        branch TEXT,
+        first_prompt TEXT,
+        files_touched TEXT,
+        stats TEXT,
+        summary TEXT DEFAULT '',
+        status TEXT DEFAULT 'raw',
+        created_at TEXT,
+        transcript_path TEXT DEFAULT '',
+        UNIQUE(session_id)
+    )""")
+    try:
+        conn.execute("ALTER TABLE observations ADD COLUMN transcript_path TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
     conn.commit()
@@ -361,7 +390,7 @@ def run_agent(claude_bin, cwd, model, timeout, item):
     try:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout,
-                              creationflags=CREATE_NO_WINDOW)
+                              creationflags=CREATE_NO_WINDOW, env=AGENT_ENV)
     except subprocess.TimeoutExpired as exc:
         logf = save_run_log(tag, cmd, "timeout", exc.stdout, exc.stderr)
         return "error", f"timeout tras {timeout}s (log: {logf})"
@@ -504,7 +533,7 @@ def refresh_knowledge(cfg, claude_bin, project):
             proc = subprocess.run(cmd, cwd=path, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace",
                                   timeout=cfg.get("knowledge_timeout", 600),
-                                  creationflags=CREATE_NO_WINDOW)
+                                  creationflags=CREATE_NO_WINDOW, env=AGENT_ENV)
             rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
             rc, stdout, stderr = "timeout", exc.stdout, exc.stderr
@@ -550,6 +579,171 @@ def knowledge_cycle(cfg, claude_bin, project_filter, dry_run, attempted, force=F
     for target in targets:
         attempted[target] = time.monotonic()
         log("  " + refresh_knowledge(cfg, claude_bin, target))
+    return len(targets)
+
+
+# --------------------------------------------------------------------------
+# Resumen de observaciones de sesion (memoria pasiva, en idle)
+# --------------------------------------------------------------------------
+# Paridad con observer/session_observer.py: mismos wrappers a saltar y mismo filtro
+# de privacidad (lo <private> tampoco puede llegar al resumen).
+OBS_NON_PROMPT_PREFIXES = ("<command-name>", "<local-command", "<system-reminder",
+                           "<command-message>", "[Request interrupted", "Caveat:")
+OBS_PRIVATE_RE = re.compile(r"<private>.*?</private>", re.IGNORECASE | re.DOTALL)
+
+
+def extract_dialogue(path, max_chars=12000):
+    """Dialogo plano del transcript JSONL: prompts del usuario y texto del asistente
+    (sin tool results ni wrappers). Si excede max_chars se queda inicio + final (el
+    cierre de la sesion suele concentrar las conclusiones). None si no se pudo leer."""
+    lines = []
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    with fh:
+        for raw in fh:
+            try:
+                entry = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("isMeta"):
+                continue
+            etype = entry.get("type")
+            content = (entry.get("message") or {}).get("content")
+            texts = []
+            if isinstance(content, str):
+                texts = [content]
+            elif isinstance(content, list):
+                texts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"]
+            for t in texts:
+                t = OBS_PRIVATE_RE.sub("", t or "").strip()
+                if not t or any(t.startswith(p) for p in OBS_NON_PROMPT_PREFIXES):
+                    continue
+                who = "USUARIO" if etype == "user" else "ASISTENTE"
+                if etype in ("user", "assistant"):
+                    lines.append(f"{who}: {t}")
+    text = "\n\n".join(lines)
+    if len(text) > max_chars:
+        half = max_chars // 2
+        text = text[:half] + "\n\n[... dialogo recortado ...]\n\n" + text[-half:]
+    return text
+
+
+def pending_observations(conn, cfg, project_filter):
+    """Observaciones 'raw' por resumir, excluyendo las ya corridas en auto_runs
+    (item_type='observation'), con la misma logica de reintentos que los items."""
+    max_attempts = 1 + max(0, int(cfg.get("max_retries", 0)))
+    retry_cutoff = (datetime.now() - timedelta(seconds=cfg.get("retry_cooldown", 300))).isoformat()
+    excl = ("SELECT item_id FROM auto_runs WHERE item_type='observation' AND NOT "
+            "(status='error' AND attempts < ? AND finished_at <= ?)")
+    q = (f"SELECT id, project, session_id, branch, first_prompt, files_touched, "
+         f"transcript_path, created_at FROM observations "
+         f"WHERE status='raw' AND id NOT IN ({excl})")
+    params = [max_attempts, retry_cutoff]
+    projs = cfg.get("observation_projects") or []
+    if projs:
+        ph = ",".join("?" for _ in projs)
+        q += f" AND project IN ({ph})"
+        params += list(projs)
+    if project_filter:
+        q += " AND project=?"
+        params.append(project_filter)
+    q += " ORDER BY created_at"
+    return [dict(r) for r in conn.execute(q, params)]
+
+
+def summarize_observation(cfg, claude_bin, obs):
+    """Resume UNA observacion con `claude -p` de texto puro (sin tools ni repo: el
+    dialogo ya va en el prompt). raw -> summarized. Bitacora idempotente en auto_runs."""
+    conn = db()
+    item = {"type": "observation", "id": obs["id"], "to": obs["project"]}
+    try:
+        if not claim(conn, item, 1 + max(0, int(cfg.get("max_retries", 0)))):
+            return f"obs#{obs['id']} skip (ya reclamada)"
+        dialogue = extract_dialogue(obs.get("transcript_path") or "",
+                                    int(cfg.get("observation_dialogue_chars", 12000)))
+        if not dialogue:
+            # Sin transcript no hay que resumir; se cierra para no reintentar eterno.
+            conn.execute("UPDATE observations SET status='summarized', "
+                         "summary='(sin transcript disponible)' WHERE id=?", (obs["id"],))
+            conn.execute("UPDATE auto_runs SET status='skipped', result='sin transcript', "
+                         "finished_at=? WHERE item_type='observation' AND item_id=?",
+                         (now_iso(), obs["id"]))
+            conn.commit()
+            return f"obs#{obs['id']} skipped (sin transcript) {obs['project']}"
+        try:
+            files = ", ".join(json.loads(obs.get("files_touched") or "[]")[:15]) or "(ninguno)"
+        except ValueError:
+            files = "(ilegible)"
+        prompt = (
+            f"Resume esta sesion de trabajo sobre el proyecto '{obs['project']}' en 3 a 5 "
+            "lineas: QUE se hizo, DECISIONES tomadas y PENDIENTES que quedaron. Concreto y "
+            "en espanol de Chile; no inventes nada que no este en el dialogo. Responde SOLO "
+            "con el resumen (sin titulos ni preambulo).\n\n"
+            f"- Rama: {obs.get('branch') or '?'}\n"
+            f"- Archivos tocados: {files}\n"
+            f"- Dialogo (recortado):\n{dialogue}"
+        )
+        cmd = [claude_bin, "-p", prompt,
+               "--disallowedTools", *DISALLOWED_TOOLS,
+               "--permission-mode", "default",
+               "--model", cfg["model"],
+               "--output-format", "json"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace",
+                                  timeout=int(cfg.get("observation_timeout", 120)),
+                                  creationflags=CREATE_NO_WINDOW, env=AGENT_ENV)
+            rc, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            rc, stdout, stderr = "timeout", exc.stdout, exc.stderr
+        except (OSError, ValueError) as exc:
+            rc, stdout, stderr = "launch-error", "", str(exc)
+        out = (stdout or "").strip()
+        try:
+            data = json.loads(out)
+            if isinstance(data, dict):
+                out = data.get("result") or data.get("text") or out
+        except ValueError:
+            pass
+        if rc != 0 or not out.strip():
+            logf = save_run_log(f"obs{obs['id']}_{obs['project']}", cmd, rc, stdout, stderr)
+            conn.execute("UPDATE auto_runs SET status='error', result=?, finished_at=? "
+                         "WHERE item_type='observation' AND item_id=?",
+                         (f"rc={rc}: {(stderr or out or '')[-400:]} (log: {logf})",
+                          now_iso(), obs["id"]))
+            conn.commit()
+            return f"obs#{obs['id']} error (rc={rc}) {obs['project']}"
+        summary = out.strip()[:2000]
+        conn.execute("UPDATE observations SET summary=?, status='summarized' WHERE id=?",
+                     (summary, obs["id"]))
+        conn.execute("UPDATE auto_runs SET status='done', result=?, finished_at=? "
+                     "WHERE item_type='observation' AND item_id=?",
+                     (summary[: cfg["result_max_chars"]], now_iso(), obs["id"]))
+        conn.commit()
+        return f"obs#{obs['id']} summarized -> {obs['project']}"
+    finally:
+        conn.close()
+
+
+def observation_cycle(cfg, claude_bin, project_filter, dry_run, force=False):
+    """Resume hasta observations_per_cycle observaciones 'raw' (todas con force)."""
+    conn = db()
+    try:
+        pend = pending_observations(conn, cfg, project_filter)
+    finally:
+        conn.close()
+    if not pend:
+        return 0
+    if dry_run:
+        log(f"DRY-RUN: {len(pend)} observacion(es) por resumir: "
+            + ", ".join(f"#{o['id']}/{o['project']}" for o in pend[:10]))
+        return 0
+    targets = pend if force else pend[: max(1, int(cfg.get("observations_per_cycle", 2)))]
+    for obs in targets:
+        log("  " + summarize_observation(cfg, claude_bin, obs))
     return len(targets)
 
 
@@ -670,6 +864,8 @@ def main():
     ap.add_argument("--since", default="", help="watermark ISO explicito (solo items posteriores)")
     ap.add_argument("--refresh-knowledge", action="store_true",
                     help="fuerza el refresh de fichas de conocimiento ahora (ignora frescura)")
+    ap.add_argument("--summarize-observations", action="store_true",
+                    help="resume TODAS las observaciones 'raw' ahora (sin tope por ciclo)")
     ap.add_argument("--git-sync", action="store_true",
                     help="fuerza el sync de repos (git_sync_projects) ahora (ignora calendario)")
     args = ap.parse_args()
@@ -699,10 +895,12 @@ def main():
         # Orden: sync de repos ANTES de fichas, para que un pull dispare el refresh al tiro.
         g = git_sync_cycle(cfg, project_filter, args.dry_run, force=args.git_sync)
         n = cycle(cfg, claude_bin, project_filter, since_iso, args.dry_run)
+        o = observation_cycle(cfg, claude_bin, project_filter, args.dry_run,
+                              force=args.summarize_observations)
         k = knowledge_cycle(cfg, claude_bin, project_filter, args.dry_run, attempted,
                             force=args.refresh_knowledge)
         log(f"Listo. {g} repo(s) sincronizado(s), {n} item(s) procesado(s), "
-            f"{k} refresh(es) de fichas.")
+            f"{o} observacion(es) resumida(s), {k} refresh(es) de fichas.")
         return
 
     try:
@@ -713,12 +911,15 @@ def main():
             git_sync_cycle(cfg, project_filter, False, force=force_git)
             force_git = False
             n = cycle(cfg, claude_bin, project_filter, since_iso, dry_run=False)
-            if n == 0 and (force_kn or time.monotonic() >= next_kn_check):
-                # idle: refresca fichas (max 1, salvo force); el chequeo git-aware corre
-                # subprocesos git, por eso va cada KNOWLEDGE_CHECK_SECONDS y no por poll.
-                knowledge_cycle(cfg, claude_bin, project_filter, False, attempted, force=force_kn)
-                force_kn = False
-                next_kn_check = time.monotonic() + KNOWLEDGE_CHECK_SECONDS
+            if n == 0:
+                # idle: primero observaciones (baratas: 1 llamada de texto puro c/u,
+                # chequeo = 1 SELECT por poll), luego fichas (throttled: corre git).
+                observation_cycle(cfg, claude_bin, project_filter, False)
+                if force_kn or time.monotonic() >= next_kn_check:
+                    knowledge_cycle(cfg, claude_bin, project_filter, False, attempted,
+                                    force=force_kn)
+                    force_kn = False
+                    next_kn_check = time.monotonic() + KNOWLEDGE_CHECK_SECONDS
             time.sleep(cfg["poll_interval"])
     except KeyboardInterrupt:
         log("Detenido por el usuario.")
