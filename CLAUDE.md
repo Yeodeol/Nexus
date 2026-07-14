@@ -75,6 +75,20 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   `setup.ps1` **no toca** el `~/.claude.json` del usuario (config sensible): genera el bloque
   `mcpServers` con rutas resueltas en `mcp-servers.generated.json` (gitignored) y lo imprime.
   Las plantillas no llevan datos reales de RedCapital (el hub parte vacío por diseño).
+- **Evaluado y descartado (2026-07-02):** embeddings/RAG sobre el código (el volumen actual —
+  8 proyectos — se resuelve con `nexus_search` + fichas + subagente, sin retorno hoy); hub
+  multi-usuario SQLite→Postgres (solo si el equipo llega a compartir el cerebro, es proyecto
+  en sí mismo); fine-tuning de modelo (arquitectura equivocada — lo valioso es la memoria
+  recuperable en `hub.db`, el motor/Claude debe seguir siendo intercambiable). Chat/UI propia
+  ya se había descartado antes (`cockpit/experimental/`).
+- **UA evaluado → adaptado en `understand/` (2026-07-13):** de estudiar
+  [Understand-Anything](https://github.com/Egonex-AI/Understand-Anything) NO se adoptó la
+  herramienta (exige Node ≥22 / pnpm / Tree-sitter, `/plugin` bloqueado en el entorno, y sería
+  otro almacén paralelo), sino su **idea**: un mapa fino intra-repo. Como los repos objetivo son
+  100% Python, se construyó con la stdlib (`ast`) — grafo nodes/edges + análisis de impacto —
+  sin deps externas. Hallazgo que valida a Nexus: UA tampoco usa embeddings (consulta léxica +
+  grep del grafo) y refresca por cambio de HEAD. Análisis profundo en
+  [docs/understand.md](docs/understand.md).
 
 ## 3. Flujos y arquitectura
 
@@ -83,6 +97,12 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 - **Cockpit (sesión única, skill `/nexus`):** cascada de costo para consultas:
   `nexus_search` → `get_knowledge` → `get_project_context` → subagente al repo (último
   recurso). Lo aprendido se persiste (`save_knowledge` / `declare_capability`).
+- **Microscopio intra-repo (skill `/nexus-understand`):** mapa fino de un repo Python
+  (`understand/ast_graph.py`, stdlib `ast`) — nodos file/class/function + edges
+  imports/calls/contains + **análisis de impacto** (`impact.py`, "si toco X qué se rompe").
+  Complementa el router cross-repo: Nexus dice *quién* provee, el mapa *dónde/qué* adentro.
+  Mapas en el hub (`~/.claude-projects-hub/understand/`), git-aware. Subcomandos
+  `build`/`ask`/`impact`/`stale`. Ver [docs/understand.md](docs/understand.md).
 - **Auto-servicio (averiguar):** `get_project_context` / `resolve_dependencies` /
   `find_providers`. Buzón asíncrono: `post_message` / `read_messages` (`kind`:
   `note`/`question`/`answer`).
@@ -131,21 +151,32 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 
 ## 6. Pendientes
 
-- **Registrar los hooks** (SessionEnd = captura; SessionStart = inyección, opcional) en
-  `~/.claude/settings.json` (paso manual del usuario; el asistente no puede auto-instalar
-  hooks). Bloque exacto en `observer/README.md`.
-- **Reiniciar Claude** tras desplegar para exponer las tools nuevas (`nexus_boot`,
-  `nexus_overview`, `nexus_search` con refs, `nexus_get`, `nexus_timeline`,
-  `save_knowledge`, `get_knowledge`, `list_observations`) a las sesiones. Tests de las
-  tools: correr `test_nexus_tools.py` con un python que tenga `mcp`
-  (`~/mcp-servers/nexus-hub/.venv/Scripts/python.exe`).
-- **Poblar fichas iniciales:** correr `python listener/nexus_listener.py --once --refresh-knowledge`
-  (o dejar el daemon en idle) para generar las primeras fichas de los responders.
-- **Triage humano** de los ~13 handoffs `pending` acumulados (visibles en `nexus_overview`).
-- **Fase 4:** sensores externos (Slack → bandeja de requerimientos) que generen `ask_provider`
-  / handoffs automáticamente.
-- Posible: notificación push/Slack cuando el listener auto-responde; vista de `auto_runs` y
-  fichas en el dashboard.
+- **Backup de `hub.db`:** es un SQLite único sin copia automática — único punto de falla real
+  del sistema (el `.bak` que existe hoy es manual, del 2026-06-25). Falta tarea programada que
+  copie `~/.claude-projects-hub/hub.db` con rotación (7 días) o versionado simple.
+- **Notificación cuando el listener actúa** (auto-responde una consulta, deja un borrador de
+  handoff esperando aprobación, o un handoff lleva >7 días `pending`): toast de Windows o
+  mensaje al buzón de Slack del propio usuario. Cierra el loop humano — sin esto los handoffs
+  se acumulan sin que nadie los note (9 `pending` al 2026-07-08).
+- **Aviso de ficha desactualizada:** al responder desde una ficha en `/nexus`, comparar
+  `knowledge.git_commit` contra el HEAD actual del repo y advertir si difieren (protege la
+  ventana entre un cambio y el refresh en idle). Hoy `git_commit` se guarda pero no se compara
+  en el momento de leer.
+- **Dashboard sin `auto_runs` ni fichas:** `dashboard/dashboard.py` solo tiene metrics/grafo de
+  rutas/capacidades/features/interactions — falta vista de corridas del listener (`auto_runs`)
+  y de las fichas de `knowledge`.
+- **Fase 4 (bot autónomo de Slack) — a un módulo de distancia, no construida:** falta el
+  conector de entrada (`sensors/slack_bot.py`, app de Slack con token propio, sin pasar por la
+  sesión del usuario ni la etiqueta "Enviado mediante Claude"). Hoy solo existe la **etapa 2**:
+  el watcher **supervisado** (`/nexus-slack` + `/loop`, en producción desde 2026-07-06).
+  Bloqueantes de decisión (no técnicos) antes de construir la etapa 3 autónoma:
+  1. **Costo:** hoy corre con la suscripción del usuario; varias personas preguntando consumen
+     su cupo — para uso de equipo real hace falta API key con presupuesto o límites estrictos.
+  2. **Gobernanza:** las fichas tienen rutas/contratos internos; un bot abierto necesita
+     whitelist de canales/personas y quizás distinguir fichas públicas vs internas.
+  Semáforo verde: cuando el watcher supervisado lleve semanas aprobando respuestas sin que el
+  usuario las edite.
+- **Triage humano** de los handoffs `pending` acumulados (9 al 2026-07-08, bajó de ~13).
 
 <!-- Dependencias entre proyectos (Nexus): si este repo CONSUME de otros, esta sección la
      mantiene tools/sync_nexus_deps.py. -->
