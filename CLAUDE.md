@@ -74,7 +74,7 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   (`mcp-servers.example.json`, `claude-global.example.md`, `seed-projects.example.json`).
   `setup.ps1` **no toca** el `~/.claude.json` del usuario (config sensible): genera el bloque
   `mcpServers` con rutas resueltas en `mcp-servers.generated.json` (gitignored) y lo imprime.
-  Las plantillas no llevan datos reales de RedCapital (el hub parte vacío por diseño).
+  Las plantillas no llevan datos reales ni personales (el hub parte vacío por diseño).
 - **Evaluado y descartado (2026-07-02):** embeddings/RAG sobre el código (el volumen actual —
   8 proyectos — se resuelve con `nexus_search` + fichas + subagente, sin retorno hoy); hub
   multi-usuario SQLite→Postgres (solo si el equipo llega a compartir el cerebro, es proyecto
