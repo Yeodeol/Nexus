@@ -90,6 +90,17 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   grep del grafo) y refresca por cambio de HEAD. Análisis profundo en
   [docs/understand.md](docs/understand.md).
 
+- **Observer de Slack sin tokens en reposo (etapa 2.5, 2026-08-18):** el `/loop` de
+  `/nexus-slack` gastaba un turno por ciclo aunque nadie escribiera. Se invirtió el patrón:
+  `sensors/slack_watch.py` (stdlib, cero LLM) sondea `conversations.history` de los chats del
+  whitelist con el token xoxp y **termina** al detectar mensajes entrantes nuevos — corre como
+  proceso background de una sesión dedicada (skill `/nexus-observer`), y su término despierta
+  a la sesión con el payload. La sesión solo trabaja cuando hay pega y, por ser interactiva,
+  puede consultar al usuario (cosa que el headless de Fase 4 no puede). Watermark propio en
+  `~/.claude/nexus_slack_watch_state.json` (separado del state de `/nexus-slack` para no
+  pisarse). Requirió ampliar los scopes del token a `*:history` (re-auth vía
+  `slack_send.py --auth-url/--exchange`).
+
 ## 3. Flujos y arquitectura
 
 - **Arranque de sesión:** `nexus_boot(proyecto)` — 1 llamada con handoffs + buzón +
@@ -167,8 +178,10 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   y de las fichas de `knowledge`.
 - **Fase 4 (bot autónomo de Slack) — a un módulo de distancia, no construida:** falta el
   conector de entrada (`sensors/slack_bot.py`, app de Slack con token propio, sin pasar por la
-  sesión del usuario ni la etiqueta "Enviado mediante Claude"). Hoy solo existe la **etapa 2**:
-  el watcher **supervisado** (`/nexus-slack` + `/loop`, en producción desde 2026-07-06).
+  sesión del usuario ni la etiqueta "Enviado mediante Claude"). Hoy existen la **etapa 2**
+  (watcher supervisado `/nexus-slack` + `/loop`, en producción desde 2026-07-06) y la
+  **etapa 2.5** (observer `/nexus-observer` + `sensors/slack_watch.py`: cero tokens en
+  reposo, la sesión despierta solo con mensajes nuevos).
   Bloqueantes de decisión (no técnicos) antes de construir la etapa 3 autónoma:
   1. **Costo:** hoy corre con la suscripción del usuario; varias personas preguntando consumen
      su cupo — para uso de equipo real hace falta API key con presupuesto o límites estrictos.
