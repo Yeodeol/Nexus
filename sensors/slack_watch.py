@@ -64,6 +64,17 @@ def inbound(messages, watermark, self_id):
     )
 
 
+def msg_out(m):
+    """Un mensaje entrante para el payload. Los adjuntos van como {id, name, mimetype}:
+    el texto llega vacio cuando alguien manda solo imagenes, y sin el id no hay como leerlas."""
+    out = {"user": m["user"], "text": m.get("text", ""), "ts": m["ts"]}
+    files = [{"id": f.get("id"), "name": f.get("name"), "mimetype": f.get("mimetype")}
+             for f in m.get("files", []) if f.get("id")]
+    if files:
+        out["files"] = files
+    return out
+
+
 def check(cfg, state):
     hits = []
     for w in cfg.get("watch", []):
@@ -84,8 +95,7 @@ def check(cfg, state):
                 "dm_channel": w.get("dm_channel"),
                 "mode": w.get("mode", "supervised"),
                 "notes": w.get("notes", ""),
-                "messages": [{"user": m["user"], "text": m.get("text", ""), "ts": m["ts"]}
-                             for m in msgs],
+                "messages": [msg_out(m) for m in msgs],
             })
     return hits
 

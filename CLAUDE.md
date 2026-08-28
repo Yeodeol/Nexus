@@ -100,6 +100,11 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   `~/.claude/nexus_slack_watch_state.json` (separado del state de `/nexus-slack` para no
   pisarse). Requirió ampliar los scopes del token a `*:history` (re-auth vía
   `slack_send.py --auth-url/--exchange`).
+  **Adjuntos (2026-08-28):** el payload de cada mensaje incluye `files: [{id, name, mimetype}]`
+  cuando los trae. Antes se perdían: quien manda solo una imagen genera un mensaje con `text`
+  vacío, y la sesión despertaba sin saber que existía la consulta (pasó con los pantallazos de
+  Manuela: hubo que ir a buscarlos con el conector). Con el `id` se leen con `slack_read_file`.
+  Tests: `python -m unittest test_slack_watch` desde `sensors/`.
 
 ## 3. Flujos y arquitectura
 

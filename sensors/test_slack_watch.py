@@ -1,25 +1,34 @@
 import unittest
 
-from sensors.slack_watch import inbound
+from slack_watch import inbound, msg_out
+
+
+class TestMsgOut(unittest.TestCase):
+    def test_sin_adjuntos_no_agrega_la_clave(self):
+        out = msg_out({"user": "U1", "text": "hola", "ts": "100.1"})
+        self.assertEqual(out, {"user": "U1", "text": "hola", "ts": "100.1"})
+
+    def test_mensaje_solo_imagen_conserva_el_id(self):
+        out = msg_out({
+            "user": "U1", "text": "", "ts": "100.2",
+            "files": [{"id": "F123", "name": "image.png", "mimetype": "image/png"},
+                      {"name": "sin_id.png"}],
+        })
+        self.assertEqual(out["text"], "")
+        self.assertEqual(out["files"], [{"id": "F123", "name": "image.png",
+                                         "mimetype": "image/png"}])
 
 
 class TestInbound(unittest.TestCase):
-    SELF = "U04SD6XDA72"
-
     def test_filtra_propios_subtipos_y_viejos(self):
         msgs = [
-            {"user": self.SELF, "text": "mio", "ts": "100.5"},
-            {"user": "U_OTRO", "text": "editado", "ts": "101.0", "subtype": "message_changed"},
-            {"user": "U_OTRO", "text": "viejo", "ts": "99.0"},
-            {"bot_id": "B1", "text": "bot sin user", "ts": "102.0"},
-            {"user": "U_OTRO", "text": "nuevo 2", "ts": "103.0"},
-            {"user": "U_OTRO", "text": "nuevo 1", "ts": "102.5"},
+            {"user": "YO", "ts": "200"},
+            {"user": "U1", "ts": "150"},
+            {"user": "U1", "ts": "250", "subtype": "channel_join"},
+            {"user": "U1", "ts": "300"},
+            {"user": "U1", "ts": "260"},
         ]
-        out = inbound(msgs, watermark="100.0", self_id=self.SELF)
-        self.assertEqual([m["text"] for m in out], ["nuevo 1", "nuevo 2"])
-
-    def test_vacio(self):
-        self.assertEqual(inbound([], "100.0", self.SELF), [])
+        self.assertEqual([m["ts"] for m in inbound(msgs, "200", "YO")], ["260", "300"])
 
 
 if __name__ == "__main__":
