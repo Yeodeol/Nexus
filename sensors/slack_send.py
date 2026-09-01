@@ -23,7 +23,7 @@ from pathlib import Path
 
 CREDS = Path.home() / ".claude" / "slack-user-creds.json"
 API = "https://slack.com/api/"
-SCOPES = "chat:write,im:write,im:history,mpim:history,channels:history,groups:history"
+SCOPES = "chat:write,im:write,im:history,mpim:history,channels:history,groups:history,files:read"
 REDIRECT = "https://localhost:3000"
 
 

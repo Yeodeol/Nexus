@@ -105,6 +105,11 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   vacío, y la sesión despertaba sin saber que existía la consulta (pasó con los pantallazos de
   Manuela: hubo que ir a buscarlos con el conector). Con el `id` se leen con `slack_read_file`.
   Tests: `python -m unittest test_slack_watch` desde `sensors/`.
+  **`files:read` (2026-09-01):** se agregó a `SCOPES` de `slack_send.py` para poder BAJAR los
+  adjuntos a `~/.claude-projects-hub/attachments/` y mandarlos en un handoff; sin ese scope
+  `files.info` responde `missing_scope` y solo queda transcribir la imagen. Requiere re-auth, y
+  el `slack-user-creds.json` de hoy solo guarda `user_token`: hay que reponer `client_id` y
+  `client_secret` (Basic Information → App Credentials) para poder correr `--auth-url`.
 
 ## 3. Flujos y arquitectura
 
