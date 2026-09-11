@@ -9,7 +9,13 @@ Panel web que lee la base compartida del hub (`~/.claude-projects-hub/hub.db`) e
 - 🧵 **Requerimientos y su recorrido** — agrupa handoffs, estados, consultas y sesiones por
   el `RC-xxxx` que aparezca en el texto, con el flujo entre proyectos
   (`checkempresa → respaldos-scraps → checkempresa → agrotop`) y la cronología completa.
-- 🔎 **Filtro** por proyecto y "solo abiertos" (se recuerda en `localStorage`).
+- 🔎 **Filtro** transversal — buscador de texto + proyecto + "solo abiertos", aplica a la
+  pestaña activa y se recuerda en `localStorage`.
+
+Organizado en **4 pestañas** (`#todo`, `#req`, `#mapa`, `#act`; la pestaña queda en el hash,
+así que el link es compartible) con la identidad visual RedCapital: naranjo `#F5821F`, navy
+`#1D2233`, cabeceras de tabla navy y barra naranja por sección, igual que la skill
+`doc-redcapital`. Tema claro/oscuro automático.
 - 🕸️ **Grafo** de dependencias e interacciones entre proyectos (SVG, layout circular).
 - 🧭 **Ruteo resuelto** — qué consume cada proyecto y quién lo provee.
 - 🔌 **Capacidades por proyecto** — provee / consume.

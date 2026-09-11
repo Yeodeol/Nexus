@@ -158,14 +158,13 @@ def render_metrics(m):
     cells = [
         ("Proyectos", m["projects"], ""),
         ("Capacidades", m["capabilities"], ""),
-        ("Req. abiertos", m["abiertos"], ""),
-        ("Pendientes", m["pendientes"], ""),
+        ("Req. abiertos", m["abiertos"], "warn"),
+        ("Pendientes", m["pendientes"], "warn"),
     ]
     out = []
-    for label, val, color in cells:
-        style = f' style="color:{color}"' if color else ""
-        out.append(f'<div class="metric"><div class="lbl">{esc(label)}</div>'
-                   f'<div class="val"{style}>{val}</div></div>')
+    for label, val, cls in cells:
+        out.append(f'<div class="metric {cls}"><div class="lbl">{esc(label)}</div>'
+                   f'<div class="val">{val}</div></div>')
     return "".join(out)
 
 
@@ -229,7 +228,7 @@ def render_routes(routes):
     trs = []
     for r in routes:
         cat = f' <span class="cat">{esc(r["category"])}</span>' if r["category"] else ""
-        trs.append("<tr>"
+        trs.append(f"<tr data-projects='{esc(r['consumer'])},{esc(r['provider'])}'>"
                    f"<td>{esc(r['consumer'])}</td>"
                    f"<td class='arrow'>&rarr;</td>"
                    f"<td><span class='cap'>{esc(r['capability'])}</span>{cat}</td>"
@@ -261,7 +260,8 @@ def render_caps(by_project):
             blocks.append(f"<div class='caplane'><div class='lanehead cons'>Consume "
                           f"<span class='cnt'>{len(bp['consumes'])}</span></div><ul>{items}</ul></div>")
         body = "".join(blocks)
-        cards.append(f"<div class='capcard'><div class='capproj'>{esc(project)}</div>"
+        cards.append(f"<div class='capcard' data-projects='{esc(project)}'>"
+                     f"<div class='capproj'>{esc(project)}</div>"
                      f"<div class='lanes'>{body}</div></div>")
     grid = "".join(cards)
     return f"<div class='capgrid'>{grid}</div>"
@@ -293,7 +293,7 @@ def render_features(features):
         else:
             brs = "<tr><td colspan='4' class='empty'>Sin ramas sembradas.</td></tr>"
         out.append(
-            "<div class='feat'>"
+            f"<div class='feat' data-projects='{esc(','.join(b['project'] for b in f['branches']))}'>"
             f"<div class='feathead'><span class='chip s-{esc(f['status'])}'>{esc(f['status'])}</span>"
             f"<span class='featslug'>{esc(f['type'])}/{esc(f['slug'])}</span></div>"
             f"<div class='featdesc'>{esc(f['description'])}</div>"
@@ -310,7 +310,7 @@ def render_interactions(interactions):
     trs = []
     for it in interactions[:50]:
         when = (it["created_at"] or "")[:16].replace("T", " ")
-        trs.append("<tr>"
+        trs.append(f"<tr data-projects='{esc(it['from_project'])},{esc(it['to_project'])}'>"
                    f"<td>{esc(it['from_project'])} &rarr; {esc(it['to_project'])}</td>"
                    f"<td>{esc(it['capability'])}</td>"
                    f"<td>{esc(it['intent'])}</td>"
@@ -328,152 +328,282 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nexus - Monitoreo</title>
+<title>Nexus - Trazabilidad</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.11.0/dist/tabler-icons.min.css">
 <style>
   :root{
-    --bg:#FAF9F5; --surface:#FFFFFF; --surface2:#F1EFE8;
-    --text:#2C2C2A; --text2:#5F5E5A; --text3:#888780;
-    --border:rgba(0,0,0,.12); --border2:rgba(0,0,0,.22);
-    --prov:#0F6E56; --cons:#854F0B; --accent:#0C447C;
-    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    --radius-md:8px; --radius-lg:12px;
+    --navy:#1D2233; --navy2:#2A3147; --orange:#F5821F; --orange2:#E06A1B;
+    --bg:#F6F7F9; --surface:#FFFFFF; --surface2:#FAFBFC; --stripe:#FAFBFC;
+    --text:#1D2233; --text2:#4A5160; --text3:#9AA1AD;
+    --border:#E6E8EC; --border2:#D7DCE6;
+    --ok:#1F7A5A; --info:#1F3A5F; --thead-bg:#1D2233; --thead-fg:#FFFFFF;
+    --font:"Segoe UI",Lato,-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+    --mono:Consolas,ui-monospace,SFMono-Regular,Menlo,"Courier New",monospace;
+    --radius:10px;
   }
   @media (prefers-color-scheme: dark){
     :root{
-      --bg:#262624; --surface:#30302E; --surface2:#3A3A38;
-      --text:#F1EFE8; --text2:#B4B2A9; --text3:#888780;
-      --border:rgba(255,255,255,.12); --border2:rgba(255,255,255,.28);
-      --prov:#4ECCA8; --cons:#FAC775; --accent:#7FB2EC;
+      --navy:#161A24; --navy2:#2A3147;
+      --bg:#161A24; --surface:#1E2330; --surface2:#252B3A; --stripe:#212734;
+      --text:#E6E8EC; --text2:#B6BCC8; --text3:#8C93A1;
+      --border:rgba(255,255,255,.10); --border2:rgba(255,255,255,.20);
+      --ok:#4ECCA8; --info:#7FB2EC; --thead-bg:#2A3147; --thead-fg:#E6E8EC;
     }
   }
   *{box-sizing:border-box;}
-  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);line-height:1.6;}
-  .wrap{max-width:880px;margin:0 auto;padding:2rem 1.25rem 3rem;}
-  h1{font-size:22px;font-weight:500;margin:0 0 .15rem;display:flex;align-items:center;gap:.5rem;}
-  .sub{font-size:13px;color:var(--text3);margin:0 0 1.5rem;}
-  h2{font-size:15px;font-weight:600;margin:1.75rem 0 .75rem;display:flex;align-items:center;gap:.5rem;}
-  h2 i{color:var(--text3);font-size:18px;}
-  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:.5rem;}
-  .metric{background:var(--surface2);border-radius:var(--radius-md);padding:.8rem 1rem;}
-  .metric .lbl{font-size:12px;color:var(--text2);}
-  .metric .val{font-size:26px;font-weight:500;}
-  .card{background:var(--surface);border:.5px solid var(--border);border-radius:var(--radius-lg);
-        padding:1rem 1.25rem;margin-bottom:.25rem;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);
+       font-size:14px;line-height:1.55;}
+
+  /* ---------- Header institucional ---------- */
+  header.topbar{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+       flex-wrap:wrap;background:var(--surface);border-bottom:3px solid var(--orange);
+       padding:14px 1.5rem 12px;}
+  .logo{display:flex;align-items:center;gap:9px;}
+  .logo-text{font-size:19px;font-weight:800;color:var(--orange);letter-spacing:-.5px;}
+  .logo .sep{width:1px;height:20px;background:var(--border2);}
+  .logo .appname{font-size:16px;font-weight:700;color:var(--text);letter-spacing:-.2px;}
+  .topright{text-align:right;color:var(--text3);font-size:11.5px;line-height:1.45;}
+
+  .wrap{max-width:1040px;margin:0 auto;padding:1.25rem 1.5rem 3rem;}
+
+  /* ---------- Metricas ---------- */
+  .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;}
+  .metric{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--orange);
+       border-radius:var(--radius);padding:.7rem .9rem;}
+  .metric .lbl{font-size:11.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;}
+  .metric .val{font-size:27px;font-weight:800;line-height:1.15;}
+  .metric.warn{border-left-color:var(--orange);} .metric.warn .val{color:var(--orange);}
+
+  /* ---------- Pestanas ---------- */
+  nav.tabs{display:flex;gap:2px;margin:1.4rem 0 0;border-bottom:1px solid var(--border);
+       flex-wrap:wrap;}
+  nav.tabs button{font:inherit;font-size:13.5px;font-weight:600;color:var(--text2);
+       background:none;border:none;border-bottom:3px solid transparent;cursor:pointer;
+       padding:.55rem .9rem;display:flex;align-items:center;gap:6px;margin-bottom:-1px;}
+  nav.tabs button:hover{color:var(--text);}
+  nav.tabs button[aria-selected="true"]{color:var(--orange);border-bottom-color:var(--orange);}
+  nav.tabs i{font-size:16px;}
+  .badge{background:var(--orange);color:#fff;font-size:11px;font-weight:700;
+       border-radius:9px;padding:0 6px;min-width:18px;text-align:center;}
+  nav.tabs button[aria-selected="false"] .badge{background:var(--text3);}
+
+  /* ---------- Filtros ---------- */
+  .filters{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;
+       background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+       padding:.55rem .8rem;margin:.9rem 0 1rem;font-size:13px;color:var(--text2);}
+  .filters input[type=search],.filters select{font:inherit;background:var(--surface2);
+       color:var(--text);border:1px solid var(--border2);border-radius:7px;padding:4px 8px;}
+  .filters input[type=search]{flex:1;min-width:180px;}
+  .filters input[type=search]:focus,.filters select:focus{outline:2px solid var(--orange);
+       outline-offset:-1px;}
+  .filters label{display:flex;align-items:center;gap:5px;white-space:nowrap;}
+  .fcount{margin-left:auto;color:var(--text3);font-size:12px;font-variant-numeric:tabular-nums;}
+
+  /* ---------- Paneles y secciones ---------- */
+  .pane[hidden]{display:none;}
+  h2{font-size:15px;font-weight:800;color:var(--text);border-left:4px solid var(--orange);
+       padding-left:10px;margin:1.5rem 0 .7rem;}
+  .pane > h2:first-child{margin-top:0;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+       padding:.9rem 1.1rem;margin-bottom:.4rem;overflow-x:auto;}
   .empty{font-size:13px;color:var(--text2);margin:.25rem 0;padding:.5rem 0;}
-  .empty code,h2 code,.featdesc code{font-family:var(--mono);font-size:12px;background:var(--surface2);
-        padding:1px 5px;border-radius:4px;}
-  svg.graph{width:100%;height:auto;display:block;}
-  .gnode{fill:var(--surface2);stroke:var(--border2);stroke-width:1;}
-  .nodelbl{fill:var(--text);font:500 12px var(--font);}
-  .edgelbl{fill:var(--text3);font:11px var(--mono);}
+  .empty code,h2 code,.featdesc code,.hint code{font-family:var(--mono);font-size:12px;
+       background:var(--surface2);border:1px solid var(--border);padding:0 4px;border-radius:4px;}
+  .hint{font-size:12px;color:var(--text3);margin:.1rem 0 .9rem;}
+
+  /* ---------- Tablas ---------- */
   table.tbl{width:100%;border-collapse:collapse;font-size:13px;}
-  table.tbl th{text-align:left;font-weight:500;color:var(--text3);font-size:12px;
-        border-bottom:.5px solid var(--border);padding:6px 8px;}
-  table.tbl td{padding:6px 8px;border-bottom:.5px solid var(--border);vertical-align:top;}
+  table.tbl thead th{background:var(--thead-bg);color:var(--thead-fg);font-weight:700;
+       text-align:left;padding:7px 10px;font-size:11.5px;text-transform:uppercase;
+       letter-spacing:.3px;white-space:nowrap;}
+  table.tbl thead th:first-child{border-radius:6px 0 0 6px;}
+  table.tbl thead th:last-child{border-radius:0 6px 6px 0;}
+  table.tbl td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top;}
+  table.tbl tbody tr:nth-child(even){background:var(--stripe);}
+  table.tbl tbody tr:hover{background:var(--surface2);}
   table.tbl tr:last-child td{border-bottom:none;}
   td.arrow{color:var(--text3);width:1%;white-space:nowrap;}
-  .cap{font-family:var(--mono);font-size:12px;color:var(--accent);}
-  .cat{font-size:11px;color:var(--text3);}
-  .capgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;}
-  .capcard{background:var(--surface);border:.5px solid var(--border);border-radius:var(--radius-md);padding:.75rem .9rem;}
-  .capproj{font-size:14px;font-weight:600;margin-bottom:.5rem;}
-  .caplane{margin-bottom:.5rem;}
-  .lanehead{font-size:12px;font-weight:500;margin-bottom:2px;}
-  .lanehead.prov{color:var(--prov);} .lanehead.cons{color:var(--cons);}
-  .lanehead .cnt{color:var(--text3);font-weight:400;}
-  .caplane ul{margin:.1rem 0 0;padding-left:1rem;}
-  .caplane li{margin:1px 0;}
-  .feat{border:.5px solid var(--border);border-radius:var(--radius-md);padding:.75rem .9rem;margin-bottom:10px;}
-  .feathead{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
-  .featslug{font-family:var(--mono);font-size:13px;font-weight:500;}
-  .featdesc{font-size:13px;color:var(--text2);margin-bottom:8px;}
-  .chip{font-size:11px;padding:2px 8px;border-radius:6px;border:.5px solid var(--border2);white-space:nowrap;}
-  .s-planned{color:var(--text3);}
-  .s-created,.s-committed,.s-open{color:var(--accent);border-color:var(--accent);}
-  .s-pushed,.s-pr-open,.s-in-progress{color:var(--cons);border-color:var(--cons);}
-  .s-merged{color:var(--prov);border-color:var(--prov);}
-  .s-closed{color:var(--text3);}
-  .ndate{color:var(--text3);font-family:var(--mono);font-size:12px;white-space:nowrap;}
-  a{color:var(--accent);}
-  .filters{display:flex;gap:1rem;align-items:center;font-size:13px;color:var(--text2);
-        margin:.75rem 0 0;flex-wrap:wrap;}
-  .filters select{font:inherit;background:var(--surface);color:var(--text);
-        border:.5px solid var(--border2);border-radius:6px;padding:2px 6px;margin-left:4px;}
-  details.tk{margin-bottom:10px;}
+  .ndate{color:var(--text3);font-family:var(--mono);font-size:11.5px;white-space:nowrap;}
+  a{color:var(--orange);}
+
+  /* ---------- Chips y estados ---------- */
+  .chip{font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;
+       border:1px solid var(--border2);white-space:nowrap;color:var(--text2);}
+  .s-abierto,.s-pending,.s-pend,.s-pushed,.s-pr-open,.s-in-progress{
+       color:var(--orange);border-color:var(--orange);background:rgba(245,130,31,.09);}
+  .s-listo,.s-consumed,.s-merged{color:var(--ok);border-color:var(--ok);
+       background:rgba(31,122,90,.09);}
+  .s-created,.s-committed,.s-open{color:var(--info);border-color:var(--info);}
+  .s-planned,.s-closed,.s-nota,.s-analisis,.s-asked,.s-consulted{color:var(--text3);}
+
+  /* ---------- Flujo de un requerimiento ---------- */
+  details.tk{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+       padding:.7rem .9rem;margin-bottom:10px;}
+  details.tk[open]{border-left:3px solid var(--orange);}
   details.tk summary{cursor:pointer;list-style:none;}
   details.tk summary::-webkit-details-marker{display:none;}
   details.tk .feathead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-  details.tk .featslug{margin-right:auto;}
-  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:.5rem 0 .75rem;}
-  .hop{font-size:12px;padding:2px 10px;border-radius:6px;background:var(--surface2);
-        border:.5px solid var(--border);}
-  .hop.open{color:var(--cons);border-color:var(--cons);font-weight:600;}
+  details.tk .featslug{font-family:var(--mono);font-size:14px;font-weight:700;margin-right:auto;}
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:.7rem 0 .8rem;}
+  .hop{font-size:12px;font-weight:600;padding:3px 11px;border-radius:20px;
+       background:var(--surface2);border:1px solid var(--border2);color:var(--text2);}
+  .hop.open{color:#fff;background:var(--orange);border-color:var(--orange);}
   .hoparrow{color:var(--text3);}
-  .kind{font-size:11px;font-family:var(--mono);color:var(--text3);}
-  .k-handoff{color:var(--accent);} .k-estado{color:var(--cons);}
-  .k-consulta{color:var(--prov);} .k-sesion{color:var(--text3);}
+  .kind{font-size:10.5px;font-family:var(--mono);font-weight:600;text-transform:uppercase;
+       letter-spacing:.3px;color:var(--text3);}
+  .k-handoff{color:var(--orange);} .k-estado{color:var(--info);}
+  .k-consulta{color:var(--ok);} .k-sesion{color:var(--text3);}
   .evdetail{font-size:12px;color:var(--text3);}
-  .s-abierto,.s-pending,.s-pend{color:var(--cons);border-color:var(--cons);}
-  .s-listo,.s-consumed{color:var(--prov);border-color:var(--prov);}
-  .s-nota,.s-analisis,.s-asked,.s-consulted{color:var(--text3);}
+
+  /* ---------- Grafo ---------- */
+  svg.graph{width:100%;height:auto;display:block;}
+  .gnode{fill:var(--surface2);stroke:var(--orange);stroke-width:1.5;}
+  .nodelbl{fill:var(--text);font:600 12px var(--font);}
+  .edgelbl{fill:var(--text3);font:11px var(--mono);}
+
+  /* ---------- Capacidades ---------- */
+  .cap{font-family:var(--mono);font-size:12px;color:var(--info);}
+  .cat{font-size:11px;color:var(--text3);}
+  .capgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;}
+  .capcard{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+       padding:.7rem .9rem;}
+  .capproj{font-size:14px;font-weight:700;margin-bottom:.45rem;
+       border-left:3px solid var(--orange);padding-left:8px;}
+  .caplane{margin-bottom:.45rem;}
+  .lanehead{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;}
+  .lanehead.prov{color:var(--ok);} .lanehead.cons{color:var(--orange);}
+  .lanehead .cnt{color:var(--text3);font-weight:400;}
+  .caplane ul{margin:.1rem 0 0;padding-left:1rem;}
+  .caplane li{margin:1px 0;}
+
+  /* ---------- Features coordinadas ---------- */
+  .feat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+       padding:.7rem .9rem;margin-bottom:10px;}
+  .feathead{display:flex;align-items:center;gap:8px;margin-bottom:4px;}
+  .featslug{font-family:var(--mono);font-size:13px;font-weight:600;}
+  .featdesc{font-size:13px;color:var(--text2);margin-bottom:8px;}
+  .noresult{font-size:13px;color:var(--text3);padding:.6rem 0;}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1><i class="ti ti-brain" aria-hidden="true"></i> Nexus &middot; Monitoreo</h1>
-  <p class="sub">Actualizado: __SNAPSHOT__ &middot; fuente: hub.db (solo lectura)</p>
+<header class="topbar">
+  <div class="logo">
+    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+      <path d="M22 6.5 A11 11 0 1 0 22 19.5 L17.5 16.8 A6 6 0 1 1 17.5 9.2 Z" fill="#F5821F"/>
+      <circle cx="20.5" cy="13" r="2.6" fill="#F5821F"/>
+    </svg>
+    <span class="logo-text">RedCapital</span>
+    <span class="sep"></span>
+    <span class="appname">Nexus</span>
+  </div>
+  <div class="topright">Trazabilidad multi-proyecto<br>__SNAPSHOT__ &middot; hub.db (solo lectura)</div>
+</header>
 
+<div class="wrap">
   <div class="metrics">__METRICS__</div>
 
+  <nav class="tabs" role="tablist">
+    <button role="tab" data-tab="todo" aria-selected="true">
+      <i class="ti ti-checkbox" aria-hidden="true"></i> Pendientes
+      <span class="badge">__PENDCOUNT__</span></button>
+    <button role="tab" data-tab="req" aria-selected="false">
+      <i class="ti ti-timeline" aria-hidden="true"></i> Requerimientos
+      <span class="badge">__REQCOUNT__</span></button>
+    <button role="tab" data-tab="mapa" aria-selected="false">
+      <i class="ti ti-share" aria-hidden="true"></i> Mapa de proyectos</button>
+    <button role="tab" data-tab="act" aria-selected="false">
+      <i class="ti ti-arrows-exchange" aria-hidden="true"></i> Actividad</button>
+  </nav>
+
   <div class="filters">
+    <input type="search" id="fq" placeholder="Buscar requerimiento, proyecto, texto...">
     <label>Proyecto
       <select id="fproj"><option value="">todos</option>__PROJOPTS__</select>
     </label>
     <label><input type="checkbox" id="fopen"> solo abiertos</label>
+    <span class="fcount" id="fcount"></span>
   </div>
 
-  <h2><i class="ti ti-checkbox" aria-hidden="true"></i> Pendientes (to-do)</h2>
-  <div class="card">__TODO__</div>
+  <section class="pane" id="p-todo">
+    <h2>Pendientes</h2>
+    <p class="hint">Handoffs en <code>pending</code> y estados <code>[PEND]</code>: el trabajo
+      que quedo esperando a que alguien lo tome.</p>
+    <div class="card">__TODO__</div>
+  </section>
 
-  <h2><i class="ti ti-timeline" aria-hidden="true"></i> Requerimientos y su recorrido</h2>
-  <div class="card">__TICKETS__</div>
+  <section class="pane" id="p-req" hidden>
+    <h2>Requerimientos y su recorrido</h2>
+    <p class="hint">Agrupados por el <code>RC-xxxx</code> que aparece en el handoff, el
+      <code>set_state</code>, la consulta o la rama. El chip naranjo del flujo es el salto que
+      nadie tomo todavia.</p>
+    __TICKETS__
+  </section>
 
-  <h2><i class="ti ti-share" aria-hidden="true"></i> Grafo de dependencias e interacciones</h2>
-  <div class="card">__GRAPH__</div>
+  <section class="pane" id="p-mapa" hidden>
+    <h2>Grafo de dependencias e interacciones</h2>
+    <div class="card">__GRAPH__</div>
+    <h2>Ruteo resuelto</h2>
+    <div class="card">__ROUTES__</div>
+    <h2>Capacidades por proyecto</h2>
+    __CAPS__
+  </section>
 
-  <h2><i class="ti ti-route" aria-hidden="true"></i> Ruteo resuelto</h2>
-  <div class="card">__ROUTES__</div>
-
-  <h2><i class="ti ti-plug-connected" aria-hidden="true"></i> Capacidades por proyecto</h2>
-  __CAPS__
-
-  <h2><i class="ti ti-git-branch" aria-hidden="true"></i> Features coordinadas</h2>
-  <div class="card">__FEATURES__</div>
-
-  <h2><i class="ti ti-arrows-exchange" aria-hidden="true"></i> Interacciones recientes</h2>
-  <div class="card">__INTERACTIONS__</div>
+  <section class="pane" id="p-act" hidden>
+    <h2>Interacciones recientes</h2>
+    <div class="card">__INTERACTIONS__</div>
+    <h2>Features coordinadas</h2>
+    <div class="card">__FEATURES__</div>
+  </section>
 </div>
+
 <script>
 (function(){
-  var proj=document.getElementById('fproj'), open=document.getElementById('fopen');
-  function apply(){
-    var p=proj.value, o=open.checked;
-    document.querySelectorAll('.tk').forEach(function(el){
-      var ps=(el.dataset.projects||'').split(',');
-      el.hidden = (p && ps.indexOf(p)<0) || (o && el.dataset.status!=='abierto');
-    });
-    document.querySelectorAll('tr.todo').forEach(function(el){
-      el.hidden = !!(p && (el.dataset.projects||'')!==p);
-    });
-    try{localStorage.setItem('nexusFilter',JSON.stringify({p:p,o:o}));}catch(e){}
+  var tabs=[].slice.call(document.querySelectorAll('nav.tabs button'));
+  var q=document.getElementById('fq'), proj=document.getElementById('fproj'),
+      open=document.getElementById('fopen'), count=document.getElementById('fcount');
+  var current='todo';
+
+  function pane(){ return document.getElementById('p-'+current); }
+
+  function show(tab){
+    current=tab;
+    tabs.forEach(function(b){ b.setAttribute('aria-selected', b.dataset.tab===tab); });
+    document.querySelectorAll('.pane').forEach(function(p){ p.hidden = p.id!=='p-'+tab; });
+    open.parentNode.hidden = (tab!=='req');
+    location.hash = tab;
+    apply();
   }
+
+  function apply(){
+    var text=q.value.trim().toLowerCase(), p=proj.value, o=open.checked && current==='req';
+    var items=pane().querySelectorAll('[data-projects]');
+    var shown=0;
+    items.forEach(function(el){
+      var ps=(el.dataset.projects||'').split(',');
+      var hide = (p && ps.indexOf(p)<0)
+              || (o && el.dataset.status!=='abierto')
+              || (text && el.textContent.toLowerCase().indexOf(text)<0);
+      el.hidden = hide;
+      if(!hide){ shown++; }
+    });
+    count.textContent = items.length ? shown+' de '+items.length : '';
+    pane().querySelectorAll('.noresult').forEach(function(n){ n.remove(); });
+    if(items.length && !shown){
+      var d=document.createElement('p');
+      d.className='noresult'; d.textContent='Nada coincide con el filtro.';
+      pane().appendChild(d);
+    }
+    try{ localStorage.setItem('nexusFilter',JSON.stringify({q:q.value,p:p,o:open.checked})); }catch(e){}
+  }
+
+  tabs.forEach(function(b){ b.addEventListener('click',function(){ show(b.dataset.tab); }); });
+  [q,proj,open].forEach(function(el){ el.addEventListener('input',apply); });
+
   try{
     var s=JSON.parse(localStorage.getItem('nexusFilter')||'{}');
-    if(s.p){proj.value=s.p;} if(s.o){open.checked=true;}
+    if(s.q){ q.value=s.q; } if(s.p){ proj.value=s.p; } if(s.o){ open.checked=true; }
   }catch(e){}
-  proj.addEventListener('change',apply); open.addEventListener('change',apply); apply();
+  show((location.hash||'#todo').slice(1));
 })();
 (function(){
   var v=null;
@@ -496,6 +626,8 @@ def render_html():
             .replace("__SNAPSHOT__", datetime.now().strftime("%Y-%m-%d %H:%M"))
             .replace("__METRICS__", render_metrics(data["metrics"]))
             .replace("__PROJOPTS__", opts)
+            .replace("__PENDCOUNT__", str(data["metrics"]["pendientes"]))
+            .replace("__REQCOUNT__", str(len(data["tickets"])))
             .replace("__TODO__", nxtickets.render_todo(data["tickets"], data["huerfanos"]))
             .replace("__TICKETS__", nxtickets.render_tickets(data["tickets"]))
             .replace("__GRAPH__", render_graph(data["nodes"], data["edges"]))
@@ -518,6 +650,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        self.path = self.path.split("?", 1)[0]
         if self.path.startswith("/version"):
             self._send(db_version(), "text/plain; charset=utf-8")
         elif self.path in ("/", "/index.html"):

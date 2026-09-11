@@ -129,9 +129,11 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   sincroniza los repos de `git_sync_projects` (bitácora agregada en `auto_runs`
   item_type='git-sync'; `--git-sync` fuerza ahora).
 - **Coordinación de ramas:** `create_coordinated_feature` + `update_branch_state`.
-- **Panel de trazabilidad:** `python dashboard\dashboard.py` (http://localhost:8788) — arriba
-  el to-do (handoffs `pending` + estados `[PEND]`, con a quién le toca) y la ficha por
-  requerimiento con su recorrido entre proyectos. Filtro por proyecto / solo abiertos.
+- **Panel de trazabilidad:** `python dashboard\dashboard.py` (http://localhost:8788) — 4
+  pestañas (Pendientes / Requerimientos / Mapa / Actividad, en el hash de la URL) con un
+  filtro transversal (texto + proyecto + solo abiertos) que aplica a la pestaña activa.
+  Identidad visual RedCapital, tomada de la skill `doc-redcapital` (naranjo `#F5821F`, navy
+  `#1D2233`): el panel se mira al lado de esos documentos, no tiene sentido otra paleta.
 - **Observaciones de sesión:** SessionEnd → `observer/session_observer.py` → fila `raw` en
   `observations` (con `transcript_path`). En idle, el listener resume hasta
   `observations_per_cycle` por ciclo con `claude -p` de **texto puro** (sin tools ni repo:
@@ -148,6 +150,9 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 - **`auto_runs` no existía al correr el listener** (el MCP desplegado es viejo). Solución: el
   listener crea su esquema **defensivamente** en `db()` (igual que `server.py`), sin depender
   de que el MCP haya migrado.
+- **Dashboard devolvía 404 con query string:** `do_GET` comparaba `self.path` exacto contra
+  `/`, así que `/?v=1` (cache-buster) caía en el 404. Se recorta la query antes de rutear.
+
 - **Repo vs desplegado:** el MCP global carga desde `C:\Users\Administrador\mcp-servers\`, no
   del repo. Por eso `ask_provider`/`post_message(kind=)` requieren **desplegar + reiniciar**
   Claude. El listener+headless funcionan igual hoy (el agente usa el `post_message` viejo).
