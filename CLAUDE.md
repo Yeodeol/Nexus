@@ -90,6 +90,16 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   grep del grafo) y refresca por cambio de HEAD. Análisis profundo en
   [docs/understand.md](docs/understand.md).
 
+- **Trazabilidad por requerimiento: derivada, sin tabla nueva (2026-09-11):** el trabajo cruza
+  proyectos (checkempresa → respaldos-scraps → checkempresa → agrotop) y se perdía de vista.
+  Se descartó crear una tabla de tareas: obliga a que cada sesión la alimente y dejaría fuera
+  las 141 filas históricas. El `RC-xxxx` ya viene en el `stage`/payload del handoff, en la
+  clave de `set_state`, en el `intent` de la interacción y en la rama de la sesión →
+  `dashboard/tickets.py` agrupa por ese RC y arma flujo + cronología + pendientes, retroactivo
+  (21 requerimientos, 62 pendientes al día de hoy). `coordinated_features` sigue vacía y no se
+  usa para esto. Único acuerdo operativo: nombrar el RC en el `stage` del handoff y en la clave
+  del `set_state`.
+
 ## 3. Flujos y arquitectura
 
 - **Arranque de sesión:** `nexus_boot(proyecto)` — 1 llamada con handoffs + buzón +
@@ -119,6 +129,9 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   sincroniza los repos de `git_sync_projects` (bitácora agregada en `auto_runs`
   item_type='git-sync'; `--git-sync` fuerza ahora).
 - **Coordinación de ramas:** `create_coordinated_feature` + `update_branch_state`.
+- **Panel de trazabilidad:** `python dashboard\dashboard.py` (http://localhost:8788) — arriba
+  el to-do (handoffs `pending` + estados `[PEND]`, con a quién le toca) y la ficha por
+  requerimiento con su recorrido entre proyectos. Filtro por proyecto / solo abiertos.
 - **Observaciones de sesión:** SessionEnd → `observer/session_observer.py` → fila `raw` en
   `observations` (con `transcript_path`). En idle, el listener resume hasta
   `observations_per_cycle` por ciclo con `claude -p` de **texto puro** (sin tools ni repo:
@@ -162,9 +175,12 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   `knowledge.git_commit` contra el HEAD actual del repo y advertir si difieren (protege la
   ventana entre un cambio y el refresh en idle). Hoy `git_commit` se guarda pero no se compara
   en el momento de leer.
-- **Dashboard sin `auto_runs` ni fichas:** `dashboard/dashboard.py` solo tiene metrics/grafo de
-  rutas/capacidades/features/interactions — falta vista de corridas del listener (`auto_runs`)
-  y de las fichas de `knowledge`.
+- **Dashboard sin `auto_runs` ni fichas:** falta vista de corridas del listener (`auto_runs`)
+  y de las fichas de `knowledge`. Ya tiene trazabilidad por requerimiento, grafo, ruteo,
+  capacidades, features e interacciones.
+- **Handoffs sin RC quedan fuera de su requerimiento:** 64 de 141 no nombran el ticket, así que
+  aparecen solo en el to-do (si están `pending`) y no en la ficha del RC. Se arregla nombrando
+  el RC en el `stage`, no con código.
 - **Fase 4 (bot autónomo de Slack) — a un módulo de distancia, no construida:** falta el
   conector de entrada (`sensors/slack_bot.py`, app de Slack con token propio, sin pasar por la
   sesión del usuario ni la etiqueta "Enviado mediante Claude"). Hoy solo existe la **etapa 2**:

@@ -33,6 +33,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tickets as nxtickets
+
 DB_PATH = Path.home() / ".claude-projects-hub" / "hub.db"
 DEFAULT_PORT = 8788
 
@@ -70,6 +73,7 @@ def build_data():
                           "FROM coordinated_features ORDER BY COALESCE(updated_at, created_at) DESC")
     branches = _rows(con, "SELECT feature_id, project, branch, state, pr_url "
                           "FROM feature_branches ORDER BY feature_id, project")
+    tickets, huerfanos = nxtickets.collect(con)
     con.close()
 
     # Ruteo: por cada 'consumes', que proyecto(s) lo 'provides'.
@@ -118,6 +122,9 @@ def build_data():
     for f in features:
         f["branches"] = branch_by_feat.get(f["id"], [])
 
+    abiertos = [t for t in tickets if t["status"] == "abierto"]
+    pendientes = sum(len(t["pendientes"]) for t in tickets) + len(huerfanos)
+
     return {
         "projects": projects,
         "by_project": by_project,
@@ -126,11 +133,16 @@ def build_data():
         "nodes": sorted(nodes),
         "interactions": interactions,
         "features": features,
+        "tickets": tickets,
+        "huerfanos": huerfanos,
+        "filter_projects": sorted({p["name"] for p in projects} |
+                                  {p for t in tickets for p in t["projects"]}),
         "metrics": {
             "projects": len(projects),
             "capabilities": len(caps),
             "interactions": len(interactions),
-            "features": len(features),
+            "abiertos": len(abiertos),
+            "pendientes": pendientes,
         },
     }
 
@@ -146,8 +158,8 @@ def render_metrics(m):
     cells = [
         ("Proyectos", m["projects"], ""),
         ("Capacidades", m["capabilities"], ""),
-        ("Interacciones", m["interactions"], ""),
-        ("Features coord.", m["features"], ""),
+        ("Req. abiertos", m["abiertos"], ""),
+        ("Pendientes", m["pendientes"], ""),
     ]
     out = []
     for label, val, color in cells:
@@ -385,6 +397,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .s-closed{color:var(--text3);}
   .ndate{color:var(--text3);font-family:var(--mono);font-size:12px;white-space:nowrap;}
   a{color:var(--accent);}
+  .filters{display:flex;gap:1rem;align-items:center;font-size:13px;color:var(--text2);
+        margin:.75rem 0 0;flex-wrap:wrap;}
+  .filters select{font:inherit;background:var(--surface);color:var(--text);
+        border:.5px solid var(--border2);border-radius:6px;padding:2px 6px;margin-left:4px;}
+  details.tk{margin-bottom:10px;}
+  details.tk summary{cursor:pointer;list-style:none;}
+  details.tk summary::-webkit-details-marker{display:none;}
+  details.tk .feathead{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+  details.tk .featslug{margin-right:auto;}
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:.5rem 0 .75rem;}
+  .hop{font-size:12px;padding:2px 10px;border-radius:6px;background:var(--surface2);
+        border:.5px solid var(--border);}
+  .hop.open{color:var(--cons);border-color:var(--cons);font-weight:600;}
+  .hoparrow{color:var(--text3);}
+  .kind{font-size:11px;font-family:var(--mono);color:var(--text3);}
+  .k-handoff{color:var(--accent);} .k-estado{color:var(--cons);}
+  .k-consulta{color:var(--prov);} .k-sesion{color:var(--text3);}
+  .evdetail{font-size:12px;color:var(--text3);}
+  .s-abierto,.s-pending,.s-pend{color:var(--cons);border-color:var(--cons);}
+  .s-listo,.s-consumed{color:var(--prov);border-color:var(--prov);}
+  .s-nota,.s-analisis,.s-asked,.s-consulted{color:var(--text3);}
 </style>
 </head>
 <body>
@@ -393,6 +426,19 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <p class="sub">Actualizado: __SNAPSHOT__ &middot; fuente: hub.db (solo lectura)</p>
 
   <div class="metrics">__METRICS__</div>
+
+  <div class="filters">
+    <label>Proyecto
+      <select id="fproj"><option value="">todos</option>__PROJOPTS__</select>
+    </label>
+    <label><input type="checkbox" id="fopen"> solo abiertos</label>
+  </div>
+
+  <h2><i class="ti ti-checkbox" aria-hidden="true"></i> Pendientes (to-do)</h2>
+  <div class="card">__TODO__</div>
+
+  <h2><i class="ti ti-timeline" aria-hidden="true"></i> Requerimientos y su recorrido</h2>
+  <div class="card">__TICKETS__</div>
 
   <h2><i class="ti ti-share" aria-hidden="true"></i> Grafo de dependencias e interacciones</h2>
   <div class="card">__GRAPH__</div>
@@ -411,6 +457,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 <script>
 (function(){
+  var proj=document.getElementById('fproj'), open=document.getElementById('fopen');
+  function apply(){
+    var p=proj.value, o=open.checked;
+    document.querySelectorAll('.tk').forEach(function(el){
+      var ps=(el.dataset.projects||'').split(',');
+      el.hidden = (p && ps.indexOf(p)<0) || (o && el.dataset.status!=='abierto');
+    });
+    document.querySelectorAll('tr.todo').forEach(function(el){
+      el.hidden = !!(p && (el.dataset.projects||'')!==p);
+    });
+    try{localStorage.setItem('nexusFilter',JSON.stringify({p:p,o:o}));}catch(e){}
+  }
+  try{
+    var s=JSON.parse(localStorage.getItem('nexusFilter')||'{}');
+    if(s.p){proj.value=s.p;} if(s.o){open.checked=true;}
+  }catch(e){}
+  proj.addEventListener('change',apply); open.addEventListener('change',apply); apply();
+})();
+(function(){
   var v=null;
   setInterval(function(){
     fetch('/version',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){
@@ -426,9 +491,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 def render_html():
     data = build_data()
+    opts = "".join(f'<option value="{esc(p)}">{esc(p)}</option>' for p in data["filter_projects"])
     return (HTML_TEMPLATE
             .replace("__SNAPSHOT__", datetime.now().strftime("%Y-%m-%d %H:%M"))
             .replace("__METRICS__", render_metrics(data["metrics"]))
+            .replace("__PROJOPTS__", opts)
+            .replace("__TODO__", nxtickets.render_todo(data["tickets"], data["huerfanos"]))
+            .replace("__TICKETS__", nxtickets.render_tickets(data["tickets"]))
             .replace("__GRAPH__", render_graph(data["nodes"], data["edges"]))
             .replace("__ROUTES__", render_routes(data["routes"]))
             .replace("__CAPS__", render_caps(data["by_project"]))
@@ -484,6 +553,7 @@ def main():
     if args.once:
         if not DB_PATH.exists():
             sys.exit(f"No se encontro la BD del hub: {DB_PATH}")
+        sys.stdout.reconfigure(encoding="utf-8")
         sys.stdout.write(render_html())
     else:
         serve(args.port)

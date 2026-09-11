@@ -3,7 +3,13 @@
 Panel web que lee la base compartida del hub (`~/.claude-projects-hub/hub.db`) en
 **solo lectura** y muestra el estado de orquestación de Nexus:
 
-- 📊 **Métricas** globales — proyectos, capacidades, interacciones, features coordinadas.
+- 📊 **Métricas** globales — proyectos, capacidades, requerimientos abiertos, pendientes.
+- ✅ **Pendientes (to-do)** — todo handoff `pending` + todo `set_state` con `[PEND]`, con
+  el proyecto al que le toca mover.
+- 🧵 **Requerimientos y su recorrido** — agrupa handoffs, estados, consultas y sesiones por
+  el `RC-xxxx` que aparezca en el texto, con el flujo entre proyectos
+  (`checkempresa → respaldos-scraps → checkempresa → agrotop`) y la cronología completa.
+- 🔎 **Filtro** por proyecto y "solo abiertos" (se recuerda en `localStorage`).
 - 🕸️ **Grafo** de dependencias e interacciones entre proyectos (SVG, layout circular).
 - 🧭 **Ruteo resuelto** — qué consume cada proyecto y quién lo provee.
 - 🔌 **Capacidades por proyecto** — provee / consume.
@@ -36,3 +42,8 @@ cambia, sin recargar a ciegas.
 - Abre la BD con `mode=ro` (solo lectura): nunca escribe en el hub.
 - Escucha solo en `127.0.0.1` (no expuesto a la red).
 - Tema claro/oscuro automático según el sistema (`prefers-color-scheme`).
+- La trazabilidad vive en `tickets.py` (agrupación + render). Autochequeo:
+  `python dashboard\tickets.py`.
+- El ticket se detecta con `RC[-_ ]?\d{3,5}` sobre el `stage`/payload del handoff, la clave
+  y el valor de `set_state`, el `intent` de la interacción y la rama de la sesión. Para que
+  un requerimiento aparezca completo, basta nombrar el RC en esos campos.
