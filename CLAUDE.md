@@ -150,6 +150,13 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 - **`auto_runs` no existía al correr el listener** (el MCP desplegado es viejo). Solución: el
   listener crea su esquema **defensivamente** en `db()` (igual que `server.py`), sin depender
   de que el MCP haya migrado.
+- **Nodo fantasma `redcapital` en el grafo:** `crm` (ruta `C:\laragon\www\redcapital`) se
+  auto-consultó 2 veces en julio pasando el nombre de la CARPETA como `from_project`, y
+  `_log_interaction` inserta el string sin validar contra `projects`, así que el grafo —que
+  arma los nodos desde las aristas— lo mostró como un proyecto más. El dashboard ahora lo
+  marca (círculo punteado + aviso en la leyenda) en vez de disfrazarlo de proyecto. Pendiente
+  decidir si se limpian las 2 filas y si `_log_interaction` valida el nombre.
+
 - **Grafo del dashboard ilegible:** las puntas de flecha tapaban el grafo porque `markerUnits`
   por defecto es `strokeWidth` y el grosor llegaba a 7. Fix: `markerUnits="userSpaceOnUse"`
   (punta de tamaño fijo) + grosor con tope 4.5. Además, con 11 nodos las etiquetas de arista

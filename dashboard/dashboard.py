@@ -168,7 +168,7 @@ def render_metrics(m):
     return "".join(out)
 
 
-def render_graph(nodes, edges):
+def render_graph(nodes, edges, known=()):
     """SVG con layout circular: nodos = proyectos, aristas curvas = dependencias/interacciones."""
     if not nodes:
         return ('<p class="empty">Aun no hay relaciones entre proyectos. Declara capacidades '
@@ -232,8 +232,11 @@ def render_graph(nodes, edges):
 
     for name, (x, y) in pos.items():
         g = grados[name]
+        alien = bool(known) and name not in known
         info = (f'{name} · {g["n"]} conexion(es) · {g["caps"]} capacidad(es) '
                 f'· {g["ints"]} interaccion(es)')
+        if alien:
+            info += ' · NO registrado en projects (nombre fantasma)'
         # Etiqueta hacia afuera del circulo para que no se pise con las aristas.
         dirx, diry = x - cx, y - cy
         d = math.hypot(dirx, diry) or 1.0
@@ -246,16 +249,22 @@ def render_graph(nodes, edges):
         parts.append(f'<g class="gnode-g" data-name="{esc(name)}" data-info="{esc(info)}" '
                      f'tabindex="0" role="button" aria-label="{esc(info)}">'
                      f'<title>{esc(info)}</title>'
-                     f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{NR}" class="gnode"/>'
+                     f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{NR}" '
+                     f'class="gnode{" alien" if alien else ""}"/>'
                      f'<text x="{x:.1f}" y="{y + 4:.1f}" class="nodecnt" text-anchor="middle">'
                      f'{g["n"]}</text>'
-                     f'<text x="{lx:.1f}" y="{ly + 4:.1f}" class="nodelbl" '
+                     f'<text x="{lx:.1f}" y="{ly + 4:.1f}" '
+                     f'class="nodelbl{" alien" if alien else ""}" '
                      f'text-anchor="{anchor}">{esc(name)}</text></g>')
     parts.append("</svg>")
 
+    fantasmas = sorted(n for n in nodes if known and n not in known)
+    aviso = ('<span class="alien">&#9888; ' + ", ".join(esc(f) for f in fantasmas) +
+             ': nombre no registrado en <code>projects</code></span>') if fantasmas else ""
     legend = ('<div class="glegend">'
               '<span><i class="sw cap"></i> dependencia declarada</span>'
               '<span><i class="sw int"></i> interaccion registrada</span>'
+              + aviso +
               '<span>grosor = volumen &middot; numero en el nodo = conexiones</span>'
               '<span class="ghint">pasa el mouse para aislar, clic en un proyecto para filtrar</span>'
               '</div><div class="gcaption" id="gcap"></div>')
@@ -517,6 +526,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .glegend .sw{display:inline-block;width:18px;height:3px;border-radius:2px;
        vertical-align:middle;margin-right:4px;}
   .glegend .sw.cap{background:var(--orange);} .glegend .sw.int{background:var(--text3);}
+  .glegend .alien{color:var(--orange);font-weight:600;}
+  .gnode.alien{stroke:var(--text3);stroke-dasharray:5 4;}
+  .nodelbl.alien{fill:var(--text3);font-style:italic;}
   .glegend .ghint{margin-left:auto;font-style:italic;}
   .gcaption{min-height:1.3em;font-size:12.5px;font-weight:600;color:var(--orange);
        font-family:var(--mono);margin-top:.3rem;}
@@ -723,7 +735,8 @@ def render_html():
             .replace("__REQCOUNT__", str(len(data["tickets"])))
             .replace("__TODO__", nxtickets.render_todo(data["tickets"], data["huerfanos"]))
             .replace("__TICKETS__", nxtickets.render_tickets(data["tickets"]))
-            .replace("__GRAPH__", render_graph(data["nodes"], data["edges"]))
+            .replace("__GRAPH__", render_graph(data["nodes"], data["edges"],
+                                              {p["name"] for p in data["projects"]}))
             .replace("__ROUTES__", render_routes(data["routes"]))
             .replace("__CAPS__", render_caps(data["by_project"]))
             .replace("__FEATURES__", render_features(data["features"]))
