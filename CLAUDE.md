@@ -150,6 +150,12 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 - **`auto_runs` no existía al correr el listener** (el MCP desplegado es viejo). Solución: el
   listener crea su esquema **defensivamente** en `db()` (igual que `server.py`), sin depender
   de que el MCP haya migrado.
+- **Grafo del dashboard ilegible:** las puntas de flecha tapaban el grafo porque `markerUnits`
+  por defecto es `strokeWidth` y el grosor llegaba a 7. Fix: `markerUnits="userSpaceOnUse"`
+  (punta de tamaño fijo) + grosor con tope 4.5. Además, con 11 nodos las etiquetas de arista
+  se apilaban en el centro: se sacaron y ese dato vive ahora en el tooltip y en el pie del
+  grafo al pasar el mouse; las aristas se curvan hacia un lado fijo para separar A→B de B→A.
+
 - **Dashboard devolvía 404 con query string:** `do_GET` comparaba `self.path` exacto contra
   `/`, así que `/?v=1` (cache-buster) caía en el 404. Se recorta la query antes de rutear.
 

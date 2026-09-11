@@ -169,13 +169,14 @@ def render_metrics(m):
 
 
 def render_graph(nodes, edges):
-    """SVG con layout circular: nodos = proyectos, aristas = dependencias/interacciones."""
+    """SVG con layout circular: nodos = proyectos, aristas curvas = dependencias/interacciones."""
     if not nodes:
         return ('<p class="empty">Aun no hay relaciones entre proyectos. Declara capacidades '
                 '(provides/consumes) o registra interacciones para ver el grafo.</p>')
-    W, H = 720, 440
+    W, H = 880, 620
     cx, cy = W / 2, H / 2
-    R = min(W, H) / 2 - 90
+    R = min(W, H) / 2 - 110
+    NR = 27
     n = len(nodes)
     pos = {}
     for i, name in enumerate(nodes):
@@ -185,11 +186,21 @@ def render_graph(nodes, edges):
             ang = (2 * math.pi * i / n) - math.pi / 2
             pos[name] = (cx + R * math.cos(ang), cy + R * math.sin(ang))
 
+    grados = {name: {"n": 0, "caps": 0, "ints": 0} for name in nodes}
+    for e in edges:
+        for side in ("src", "dst"):
+            g = grados[e[side]]
+            g["n"] += 1
+            g["caps"] += e["caps"]
+            g["ints"] += e["ints"]
+
     parts = [f'<svg viewBox="0 0 {W} {H}" class="graph" xmlns="http://www.w3.org/2000/svg" '
              f'role="img" aria-label="Grafo de dependencias entre proyectos">']
-    parts.append('<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" '
-                 'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
-                 '<path d="M0,0 L10,5 L0,10 z" fill="var(--text2)"/></marker></defs>')
+    # markerUnits fijo: si no, la punta escala con el grosor y tapa el grafo.
+    parts.append('<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" '
+                 'markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" '
+                 'orient="auto-start-reverse"><path d="M0,1 L9,5 L0,9 z" fill="currentColor"/>'
+                 '</marker></defs>')
 
     for e in edges:
         x1, y1 = pos[e["src"]]
@@ -197,29 +208,58 @@ def render_graph(nodes, edges):
         dx, dy = x2 - x1, y2 - y1
         dist = math.hypot(dx, dy) or 1.0
         ux, uy = dx / dist, dy / dist
-        r = 24
-        sx, sy = x1 + ux * r, y1 + uy * r
-        ex, ey = x2 - ux * r, y2 - uy * r
-        mx, my = (sx + ex) / 2, (sy + ey) / 2
-        weight = 1.2 + (e["caps"] + e["ints"]) * 0.6
+        # Arco siempre curvado hacia el mismo lado: separa A->B de B->A.
+        bow = dist * 0.13
+        qx, qy = (x1 + x2) / 2 - uy * bow, (y1 + y2) / 2 + ux * bow
+        s = math.hypot(qx - x1, qy - y1) or 1.0
+        sx, sy = x1 + (qx - x1) / s * NR, y1 + (qy - y1) / s * NR
+        t = math.hypot(qx - x2, qy - y2) or 1.0
+        ex, ey = x2 + (qx - x2) / t * (NR + 4), y2 + (qy - y2) / t * (NR + 4)
+
+        peso = e["caps"] + e["ints"]
+        width = min(1.2 + peso * 0.35, 4.5)
         bits = []
         if e["caps"]:
-            bits.append(f'{e["caps"]} cap.')
+            bits.append(f'{e["caps"]} capacidad(es)')
         if e["ints"]:
-            bits.append(f'{e["ints"]} int.')
-        label = " - ".join(bits)
-        parts.append(f'<line x1="{sx:.1f}" y1="{sy:.1f}" x2="{ex:.1f}" y2="{ey:.1f}" '
-                     f'stroke="var(--border2)" stroke-width="{weight:.1f}" marker-end="url(#arrow)"/>')
-        if label:
-            parts.append(f'<text x="{mx:.1f}" y="{my - 5:.1f}" class="edgelbl" '
-                         f'text-anchor="middle">{esc(label)}</text>')
+            bits.append(f'{e["ints"]} interaccion(es)')
+        info = f'{e["src"]} → {e["dst"]} · ' + ", ".join(bits)
+        cls = "edge cap" if e["caps"] else "edge int"
+        parts.append(f'<path class="{cls}" d="M{sx:.1f},{sy:.1f} Q{qx:.1f},{qy:.1f} {ex:.1f},{ey:.1f}" '
+                     f'stroke-width="{width:.1f}" marker-end="url(#arrow)" '
+                     f'data-src="{esc(e["src"])}" data-dst="{esc(e["dst"])}" '
+                     f'data-info="{esc(info)}"><title>{esc(info)}</title></path>')
 
     for name, (x, y) in pos.items():
-        parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="22" class="gnode"/>')
-        parts.append(f'<text x="{x:.1f}" y="{y + 38:.1f}" class="nodelbl" '
-                     f'text-anchor="middle">{esc(name)}</text>')
+        g = grados[name]
+        info = (f'{name} · {g["n"]} conexion(es) · {g["caps"]} capacidad(es) '
+                f'· {g["ints"]} interaccion(es)')
+        # Etiqueta hacia afuera del circulo para que no se pise con las aristas.
+        dirx, diry = x - cx, y - cy
+        d = math.hypot(dirx, diry) or 1.0
+        lx, ly = x + dirx / d * (NR + 16), y + diry / d * (NR + 16)
+        anchor = "middle"
+        if dirx / d > 0.35:
+            anchor = "start"
+        elif dirx / d < -0.35:
+            anchor = "end"
+        parts.append(f'<g class="gnode-g" data-name="{esc(name)}" data-info="{esc(info)}" '
+                     f'tabindex="0" role="button" aria-label="{esc(info)}">'
+                     f'<title>{esc(info)}</title>'
+                     f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{NR}" class="gnode"/>'
+                     f'<text x="{x:.1f}" y="{y + 4:.1f}" class="nodecnt" text-anchor="middle">'
+                     f'{g["n"]}</text>'
+                     f'<text x="{lx:.1f}" y="{ly + 4:.1f}" class="nodelbl" '
+                     f'text-anchor="{anchor}">{esc(name)}</text></g>')
     parts.append("</svg>")
-    return "\n".join(parts)
+
+    legend = ('<div class="glegend">'
+              '<span><i class="sw cap"></i> dependencia declarada</span>'
+              '<span><i class="sw int"></i> interaccion registrada</span>'
+              '<span>grosor = volumen &middot; numero en el nodo = conexiones</span>'
+              '<span class="ghint">pasa el mouse para aislar, clic en un proyecto para filtrar</span>'
+              '</div><div class="gcaption" id="gcap"></div>')
+    return '<div class="graphwrap">' + "\n".join(parts) + legend + "</div>"
 
 
 def render_routes(routes):
@@ -456,10 +496,30 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .evdetail{font-size:12px;color:var(--text3);}
 
   /* ---------- Grafo ---------- */
+  .graphwrap{position:relative;}
   svg.graph{width:100%;height:auto;display:block;}
-  .gnode{fill:var(--surface2);stroke:var(--orange);stroke-width:1.5;}
-  .nodelbl{fill:var(--text);font:600 12px var(--font);}
-  .edgelbl{fill:var(--text3);font:11px var(--mono);}
+  .gnode{fill:var(--surface2);stroke:var(--orange);stroke-width:2;}
+  .nodelbl{fill:var(--text);font:600 12.5px var(--font);}
+  .nodecnt{fill:var(--text3);font:700 12px var(--mono);}
+  .edge{fill:none;stroke:currentColor;opacity:.55;transition:opacity .12s;}
+  .edge.cap{color:var(--orange);}
+  .edge.int{color:var(--text3);}
+  .gnode-g{cursor:pointer;transition:opacity .12s;}
+  .gnode-g:focus{outline:none;}
+  .gnode-g:focus .gnode,.gnode-g:hover .gnode{fill:var(--orange);stroke:var(--orange);}
+  .gnode-g:focus .nodecnt,.gnode-g:hover .nodecnt{fill:#fff;}
+  .graph.focused .edge{opacity:.06;}
+  .graph.focused .edge.on{opacity:1;}
+  .graph.focused .gnode-g{opacity:.25;}
+  .graph.focused .gnode-g.on{opacity:1;}
+  .glegend{display:flex;gap:1rem;flex-wrap:wrap;align-items:center;font-size:11.5px;
+       color:var(--text3);border-top:1px solid var(--border);margin-top:.5rem;padding-top:.6rem;}
+  .glegend .sw{display:inline-block;width:18px;height:3px;border-radius:2px;
+       vertical-align:middle;margin-right:4px;}
+  .glegend .sw.cap{background:var(--orange);} .glegend .sw.int{background:var(--text3);}
+  .glegend .ghint{margin-left:auto;font-style:italic;}
+  .gcaption{min-height:1.3em;font-size:12.5px;font-weight:600;color:var(--orange);
+       font-family:var(--mono);margin-top:.3rem;}
 
   /* ---------- Capacidades ---------- */
   .cap{font-family:var(--mono);font-size:12px;color:var(--info);}
@@ -604,6 +664,39 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     if(s.q){ q.value=s.q; } if(s.p){ proj.value=s.p; } if(s.o){ open.checked=true; }
   }catch(e){}
   show((location.hash||'#todo').slice(1));
+})();
+(function(){
+  var svg=document.querySelector('svg.graph'); if(!svg){ return; }
+  var cap=document.getElementById('gcap');
+  var edges=[].slice.call(svg.querySelectorAll('.edge'));
+  var nodes=[].slice.call(svg.querySelectorAll('.gnode-g'));
+  function focus(name){
+    svg.classList.toggle('focused', !!name);
+    edges.forEach(function(e){
+      e.classList.toggle('on', !!name && (e.dataset.src===name || e.dataset.dst===name));
+    });
+    nodes.forEach(function(nd){
+      var me=nd.dataset.name;
+      nd.classList.toggle('on', me===name || edges.some(function(e){
+        return e.classList.contains('on') && (e.dataset.src===me || e.dataset.dst===me);
+      }));
+    });
+  }
+  function bind(el, name){
+    el.addEventListener('mouseenter', function(){ focus(name); cap.textContent=el.dataset.info; });
+    el.addEventListener('focus', function(){ focus(name); cap.textContent=el.dataset.info; });
+    ['mouseleave','blur'].forEach(function(ev){
+      el.addEventListener(ev, function(){ focus(''); cap.textContent=''; });
+    });
+  }
+  nodes.forEach(function(nd){
+    bind(nd, nd.dataset.name);
+    nd.addEventListener('click', function(){
+      var p=document.getElementById('fproj');
+      p.value=nd.dataset.name; p.dispatchEvent(new Event('input'));
+    });
+  });
+  edges.forEach(function(e){ bind(e, e.dataset.src); });
 })();
 (function(){
   var v=null;
