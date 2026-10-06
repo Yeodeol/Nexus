@@ -5,8 +5,8 @@ session_context.py — Hook SessionStart de Claude Code: INYECCION de memoria de
 
 Contraparte de session_observer.py (fase 4 de memoria pasiva): al ARRANCAR una sesion
 sobre un proyecto registrado en el hub, inyecta via additionalContext un bloque compacto
-con lo que el hub sabe: ultimas sesiones (observaciones resumidas), handoffs pendientes
-y mensajes sin leer. Es el `nexus_boot` automatico, sin que el modelo tenga que llamarlo.
+con lo que el hub sabe: ultimas sesiones (observaciones resumidas), handoffs pendientes,
+mensajes sin leer y las dependencias del proyecto (que consume y quien se lo provee). Es el `nexus_boot` automatico, sin que el modelo tenga que llamarlo.
 
 Costo controlado: el bloque se recorta a `inject_max_chars` (default 1200 chars ≈ ~300
 tokens) y se puede apagar con `inject_context: false` en observer/config.json.
@@ -34,7 +34,7 @@ import session_observer as so  # reutiliza db(), resolve_project(), config y log
 
 INJECT_DEFAULTS = {
     "inject_context": True,   # apagar con false si el bloque molesta o pesa mucho
-    "inject_max_chars": 1200,  # presupuesto duro del bloque (≈300 tokens)
+    "inject_max_chars": 1600,  # presupuesto duro del bloque (≈400 tokens)
     "inject_observations": 3,  # cuantas sesiones recientes mostrar
 }
 
@@ -85,6 +85,36 @@ def build_context(conn, cfg, project):
         msgs = 0
     if msgs:
         lines.append(f"Mensajes sin leer en el buzon: {msgs}.")
+
+    try:
+        deps = conn.execute(
+            "SELECT c1.name AS capacidad, ("
+            " SELECT group_concat(c2.project, ', ') FROM capabilities c2"
+            " WHERE lower(c2.name)=lower(c1.name) AND c2.kind='provides'"
+            " AND c2.project<>c1.project) AS proveedores"
+            " FROM capabilities c1 WHERE c1.project=? AND c1.kind='consumes'"
+            " ORDER BY c1.name",
+            (project,)).fetchall()
+    except Exception:
+        deps = []
+    if deps:
+        partes = [
+            f"{d['capacidad']} ({d['proveedores']})" if d["proveedores"]
+            else f"{d['capacidad']} (sin proveedor declarado)"
+            for d in deps
+        ]
+        extra = "..." if len(partes) > 5 else ""
+        lines.append("Consume de otros proyectos: " + "; ".join(partes[:5]) + extra + ".")
+    try:
+        prov = [r["name"] for r in conn.execute(
+            "SELECT name FROM capabilities WHERE project=? AND kind='provides'"
+            " ORDER BY name",
+            (project,)).fetchall()]
+    except Exception:
+        prov = []
+    if prov:
+        extra = "..." if len(prov) > 6 else ""
+        lines.append("Provee a otros (ojo al cambiarlo): " + ", ".join(prov[:6]) + extra + ".")
     if not lines:
         return None
     header = (f"[Nexus] Memoria del hub para el proyecto '{project}' "
