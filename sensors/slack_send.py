@@ -10,9 +10,11 @@ Uso:
 
 channel_id: D... (DM), C... (canal) o U... (user id: abre/resuelve el DM solo).
 Opcional: --thread <ts> para responder en hilo.
+Opcional: --attach <ruta> (repetible) para adjuntar archivos; el mensaje va como comentario
+del adjunto y puede omitirse. Requiere el scope files:write.
 
 Token: ~/.claude/slack-user-creds.json  ->  {"user_token": "xoxp-..."}
-Se crea en api.slack.com/apps (User Token Scopes: chat:write, im:write).
+Se crea en api.slack.com/apps (User Token Scopes: los de SCOPES).
 """
 
 import json
@@ -23,7 +25,7 @@ from pathlib import Path
 
 CREDS = Path.home() / ".claude" / "slack-user-creds.json"
 API = "https://slack.com/api/"
-SCOPES = "chat:write,im:write,im:history,mpim:history,channels:history,groups:history,files:read"
+SCOPES = "chat:write,im:write,im:history,mpim:history,channels:history,groups:history,files:read,files:write"
 REDIRECT = "https://localhost:3000"
 
 
@@ -78,20 +80,36 @@ def token():
     return t
 
 
-def call(method, payload):
+def call(method, payload, form=False):
+    if form:
+        data = urllib.parse.urlencode(payload).encode("utf-8")
+        tipo = "application/x-www-form-urlencoded"
+    else:
+        data = json.dumps(payload).encode("utf-8")
+        tipo = "application/json; charset=utf-8"
     req = urllib.request.Request(
         API + method,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token()}",
-            "Content-Type": "application/json; charset=utf-8",
-        },
+        data=data,
+        headers={"Authorization": f"Bearer {token()}", "Content-Type": tipo},
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         out = json.loads(r.read().decode("utf-8"))
     if not out.get("ok"):
         sys.exit(f"Slack error en {method}: {out.get('error')}")
     return out
+
+
+def subir(ruta):
+    archivo = Path(ruta)
+    contenido = archivo.read_bytes()
+    destino = call("files.getUploadURLExternal",
+                   {"filename": archivo.name, "length": len(contenido)}, form=True)
+    req = urllib.request.Request(destino["upload_url"], data=contenido,
+                                 headers={"Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        if r.status != 200:
+            sys.exit(f"Slack rechazo la subida de {archivo.name}: HTTP {r.status}")
+    return {"id": destino["file_id"], "title": archivo.name}
 
 
 def main(argv):
@@ -119,13 +137,33 @@ def main(argv):
         i = rest.index("--thread")
         thread_ts = rest[i + 1]
         rest = rest[:i] + rest[i + 2:]
-    if rest[0] == "--file":
+    adjuntos = []
+    while "--attach" in rest:
+        i = rest.index("--attach")
+        adjuntos.append(rest[i + 1])
+        rest = rest[:i] + rest[i + 2:]
+    if not rest:
+        text = ""
+    elif rest[0] == "--file":
         text = Path(rest[1]).read_text(encoding="utf-8")
     else:
         text = rest[0]
 
     if channel.startswith("U"):
         channel = call("conversations.open", {"users": channel})["channel"]["id"]
+
+    if adjuntos:
+        faltan = [a for a in adjuntos if not Path(a).is_file()]
+        if faltan:
+            sys.exit(f"No existe: {', '.join(faltan)}")
+        payload = {"channel_id": channel, "files": json.dumps([subir(a) for a in adjuntos])}
+        if text:
+            payload["initial_comment"] = text
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        call("files.completeUploadExternal", payload, form=True)
+        print(f"enviado: channel={channel} adjuntos={len(adjuntos)}")
+        return
 
     payload = {"channel": channel, "text": text}
     if thread_ts:
