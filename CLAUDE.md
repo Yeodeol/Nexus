@@ -110,6 +110,7 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   `files.info` responde `missing_scope` y solo queda transcribir la imagen. Requiere re-auth, y
   el `slack-user-creds.json` de hoy solo guarda `user_token`: hay que reponer `client_id` y
   `client_secret` (Basic Information → App Credentials) para poder correr `--auth-url`.
+  **Adjuntar archivos (2026-10-15):** `slack_send.py <canal> "msg" --attach <ruta>` (repetible) sube con `files.getUploadURLExternal` + `files.completeUploadExternal` (el `files.upload` viejo está deprecado) y el texto va como `initial_comment`. Requiere `files:write` en `SCOPES` y re-auth; el token del 15-10 tampoco tenía `files:read`, así que la re-auth del 09-01 nunca se hizo. Tests: `python -m unittest test_slack_send`.
 
 ## 3. Flujos y arquitectura
 
