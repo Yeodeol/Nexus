@@ -105,6 +105,10 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   vacío, y la sesión despertaba sin saber que existía la consulta (pasó con los pantallazos de
   Manuela: hubo que ir a buscarlos con el conector). Con el `id` se leen con `slack_read_file`.
   Tests: `python -m unittest test_slack_watch` desde `sensors/`.
+  **Bots (2026-11-11):** `include_bots: true` en una entrada del `watch` hace que el observer
+  tome tambien los mensajes de bots (sin `user`, subtipo `bot_message`), que antes descartaba.
+  Lo pide `#alertas-checkempresa`, donde todo lo publica el CheckEmpresa Bot (cargas de
+  nomina, compras B2C, informes sin generar). En el payload, `user` trae el `bot_id`.
   **`files:read` (2026-09-01):** se agregó a `SCOPES` de `slack_send.py` para poder BAJAR los
   adjuntos a `~/.claude-projects-hub/attachments/` y mandarlos en un handoff; sin ese scope
   `files.info` responde `missing_scope` y solo queda transcribir la imagen. Requiere re-auth, y

@@ -30,6 +30,16 @@ class TestInbound(unittest.TestCase):
         ]
         self.assertEqual([m["ts"] for m in inbound(msgs, "200", "YO")], ["260", "300"])
 
+    def test_bots_solo_con_include_bots(self):
+        msgs = [
+            {"bot_id": "B1", "subtype": "bot_message", "text": "alerta", "ts": "300"},
+            {"user": "U1", "ts": "310"},
+        ]
+        self.assertEqual([m["ts"] for m in inbound(msgs, "200", "YO")], ["310"])
+        bots = inbound(msgs, "200", "YO", include_bots=True)
+        self.assertEqual([m["ts"] for m in bots], ["300", "310"])
+        self.assertEqual(msg_out(bots[0])["user"], "B1")
+
 
 if __name__ == "__main__":
     unittest.main()

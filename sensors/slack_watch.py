@@ -53,13 +53,14 @@ def load_json(path, default):
     return default
 
 
-def inbound(messages, watermark, self_id):
-    """Mensajes de otra persona, sin subtipos (joins/edits), posteriores al watermark."""
+def inbound(messages, watermark, self_id, include_bots=False):
+    """Mensajes de otra persona, sin subtipos (joins/edits), posteriores al watermark.
+    Con include_bots tambien los de bots (canales de alertas que publica una app)."""
     return sorted(
         (m for m in messages
-         if m.get("user") and m["user"] != self_id
-         and not m.get("subtype")
-         and float(m.get("ts", 0)) > float(watermark)),
+         if float(m.get("ts", 0)) > float(watermark)
+         and ((m.get("user") and m["user"] != self_id and not m.get("subtype"))
+              or (include_bots and m.get("bot_id")))),
         key=lambda m: float(m["ts"]),
     )
 
@@ -67,7 +68,7 @@ def inbound(messages, watermark, self_id):
 def msg_out(m):
     """Un mensaje entrante para el payload. Los adjuntos van como {id, name, mimetype}:
     el texto llega vacio cuando alguien manda solo imagenes, y sin el id no hay como leerlas."""
-    out = {"user": m["user"], "text": m.get("text", ""), "ts": m["ts"]}
+    out = {"user": m.get("user") or m.get("bot_id"), "text": m.get("text", ""), "ts": m["ts"]}
     files = [{"id": f.get("id"), "name": f.get("name"), "mimetype": f.get("mimetype")}
              for f in m.get("files", []) if f.get("id")]
     if files:
@@ -86,7 +87,8 @@ def check(cfg, state):
             state[ch] = f"{time.time():.6f}"
             continue
         out = call("conversations.history", {"channel": ch, "oldest": wm, "limit": 20})
-        msgs = inbound(out.get("messages", []), wm, cfg.get("self_user_id", ""))
+        msgs = inbound(out.get("messages", []), wm, cfg.get("self_user_id", ""),
+                       w.get("include_bots", False))
         if msgs:
             state[ch] = msgs[-1]["ts"]
             hits.append({
