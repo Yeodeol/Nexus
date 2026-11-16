@@ -157,6 +157,18 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
 - **`auto_runs` no existía al correr el listener** (el MCP desplegado es viejo). Solución: el
   listener crea su esquema **defensivamente** en `db()` (igual que `server.py`), sin depender
   de que el MCP haya migrado.
+- **`save_knowledge` colgado y fichas sin `git_commit` (2026-11-16):** cada llamada tardaba 10 s
+  (headless) o hasta el timeout MCP de 1800 s (desktop) y guardaba `git_commit` vacío en casi
+  todas las fichas, así que el refresh por HEAD caía al fallback por edad. Causa: `_repo_head`
+  lanzaba `git` heredando el stdin del server stdio; en Windows, con el lector del MCP bloqueado
+  en un `ReadFile` síncrono sobre ese pipe (creado por node/libuv), el hijo se bloquea al
+  arrancar hasta que llega otro byte por stdin. Solución: `stdin=subprocess.DEVNULL`. No se
+  reproduce con pipes anónimos de Python, solo lanzando desde node (lo cubre
+  `RepoHeadStdioTestCase`). Los demás `subprocess` del repo no son servers stdio y no aplica.
+- **Listener sin auth (2026-07-27 → 2026-11-16):** el `claude -p` headless tenía el OAuth
+  vencido; todo refresh de fichas y resumen de observaciones falló (1.734 + 119 corridas en
+  `auto_runs`). Se resolvió con `claude /login`. Mirar `auto_runs` con `status='error'` si las
+  fichas dejan de actualizarse.
 - **Repo vs desplegado:** el MCP global carga desde `C:\Users\Administrador\mcp-servers\`, no
   del repo. Por eso `ask_provider`/`post_message(kind=)` requieren **desplegar + reiniciar**
   Claude. El listener+headless funcionan igual hoy (el agente usa el `post_message` viejo).
@@ -201,6 +213,11 @@ Memoria operativa del repo. Para la narrativa completa ver [README](README.md) y
   Semáforo verde: cuando el watcher supervisado lleve semanas aprobando respuestas sin que el
   usuario las edite.
 - **Triage humano** de los handoffs `pending` acumulados (9 al 2026-07-08, bajó de ~13).
+- **Observaciones muertas por la caída de auth:** 84 quedaron `raw` con su corrida en `error` y
+  reintentos agotados; el listener no las retoma. Recuperarlas = borrar esas filas de
+  `auto_runs` (`item_type='observation'`, resultado con "OAuth session expired").
+- **Fichas existentes sin `git_commit`:** tras desplegar el fix se pueblan solas en el próximo
+  refresh de cada proyecto.
 
 <!-- Dependencias entre proyectos (Nexus): si este repo CONSUME de otros, esta sección la
      mantiene tools/sync_nexus_deps.py. -->
