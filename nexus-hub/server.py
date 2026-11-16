@@ -229,7 +229,8 @@ def _repo_head(path):
         return ""
     try:
         proc = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"],
-                              capture_output=True, text=True, timeout=10)
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=10)
         return proc.stdout.strip() if proc.returncode == 0 else ""
     except (OSError, subprocess.TimeoutExpired):
         return ""

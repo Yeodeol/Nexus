@@ -10,6 +10,9 @@ Correr (requiere el paquete `mcp`, usar el venv del MCP desplegado o uno propio)
 Usa una hub.db temporal (parcheando DB_PATH): no toca la base real.
 """
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -144,6 +147,32 @@ class NexusToolsTestCase(unittest.TestCase):
 
     def test_timeline_respeta_days(self):
         self.assertIn("Sin eventos", server.nexus_timeline(days=1))
+
+
+class RepoHeadStdioTestCase(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt" and shutil.which("node"), "requiere Windows y node")
+    def test_repo_head_no_se_bloquea_con_lector_de_stdin_pendiente(self):
+        repo = Path(__file__).resolve().parents[1]
+        esperado = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                  stdin=subprocess.DEVNULL, capture_output=True,
+                                  text=True).stdout.strip()
+        hijo = ("import sys, os, threading, time; sys.path.insert(0, sys.argv[1]); "
+                "import server; "
+                "threading.Thread(target=sys.stdin.buffer.read, args=(1,), daemon=True).start(); "
+                "time.sleep(0.5); t = time.time(); h = server._repo_head(sys.argv[2]); "
+                "print(h, round(time.time() - t, 1), flush=True); os._exit(0)")
+        lanzador = ("const c = require('child_process').spawn(process.argv[1], "
+                    "process.argv.slice(2), {stdio: ['pipe', 'pipe', 'inherit']}); "
+                    "let o = ''; c.stdout.on('data', d => o += d); "
+                    "const k = setTimeout(() => { c.kill(); console.log('TIMEOUT'); "
+                    "process.exit(); }, 8000); "
+                    "c.on('exit', () => { clearTimeout(k); console.log(o.trim()); "
+                    "process.exit(); });")
+        out = subprocess.run(["node", "-e", lanzador, sys.executable, "-c", hijo,
+                              str(Path(server.__file__).resolve().parent), str(repo)],
+                             capture_output=True, text=True, timeout=30).stdout.split()
+        self.assertEqual(out[:1], [esperado])
+        self.assertLess(float(out[1]), 5)
 
 
 if __name__ == "__main__":
